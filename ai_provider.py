@@ -1,12 +1,18 @@
 import os
 import requests
+import json
+
 from dotenv import load_dotenv
 from groq import Groq
 from google import genai
+
 from schema import get_schema
-from database import get_database_keywords , suggest_keyword
+from database import get_database_keywords, suggest_keyword
+from semantic_layer import get_sql_generator_context
+
 
 load_dotenv()
+
 
 groq_client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
@@ -16,18 +22,31 @@ gemini_client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
+
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+
 def clean_sql(sql):
+
     sql = sql.strip()
 
     if sql.startswith("```"):
-        sql = sql.replace("```sql", "").replace("```", "").strip()
+        sql = (
+            sql
+            .replace("```sql", "")
+            .replace("```", "")
+            .strip()
+        )
 
     return sql
+
+
+# --------------------------------------------------
+# Clarification Check
+# --------------------------------------------------
 
 def check_clarification(question, conversation_history=None):
 
@@ -39,42 +58,129 @@ def check_clarification(question, conversation_history=None):
         conversation = "no previous conversation"
 
     prompt = f"""
-    You are a Query Clarification Engine for a Text-to-SQL chatbot.
+You are the Query Confidence and Clarification Engine of a Text-to-SQL system.
 
-    Database schema:
-    {schema}
+Your main goal is to prevent confidently wrong SQL queries.
 
-    Previous conversation:
-    {conversation}
+Database schema:
+{schema}
 
-    User question:
-    {question}
+Previous conversation:
+{conversation}
 
-    Your job is NOT to generate SQL.
+Current user question:
+{question}
 
-    Decide whether the user's question is clear enough to generate a correct SQL query.
+You must decide whether the question can be converted into a correct SQL query
+WITHOUT making an assumption that could change the meaning of the result.
 
-    Rules:
-    - If the question has a clear intent and required information is available, return exactly:
-    CLEAR
+Return ONLY one of these:
+CLEAR
+CLARIFY
+UNKNOWN
 
-    - If the question is ambiguous and guessing could produce a wrong result, return exactly:
-    CLARIFY
+CLEAR
 
-    - If the requested information does not exist in the database, return exactly:
-    UNKNOWN
+Return CLEAR when the user's intent is sufficiently clear.
 
-    Important:
-    - Never guess the user's intended meaning.
-    - Words such as "best", "top", "good", "popular", "successful", etc. may be ambiguous when the ranking metric is not specified.
-    - If multiple reasonable interpretations exist, return CLARIFY.
-    - Consider the previous conversation when deciding whether the current question is clear.
-    - Understand English, Hindi, Hinglish, Gujarati, French, and other languages.
-    - Return only CLEAR, CLARIFY, or UNKNOWN.
-    """
+Do NOT ask for clarification just because:
+- The wording is informal.
+- The user uses Hindi, Hinglish, Gujarati, French, or another language.
+- The question is short.
+- The user uses synonyms or natural language.
+- The user does not mention the exact database column name.
+- A reasonable SQL interpretation is obvious from the database schema.
+- A ranking/filtering operation has an obvious meaning from the available schema.
 
-    # OpenRouter
+Examples:
+
+"show me customers from Germany"
+→ CLEAR
+
+"give me the 10 most expensive products"
+→ CLEAR
+
+"show products costing more than 20"
+→ CLEAR
+
+"how many customers are there?"
+→ CLEAR
+
+"show orders from 1997"
+→ CLEAR
+
+"show me all order details"
+→ CLEAR
+
+CLARIFY
+
+Return CLARIFY ONLY when there are multiple reasonable interpretations
+and choosing one would require guessing the user's intention.
+
+Examples:
+
+"show me 10 best customers"
+→ CLARIFY
+
+Because "best" could reasonably mean:
+- highest total spending
+- most orders
+- highest quantity purchased
+
+Another example:
+
+"show me the most popular products"
+→ CLARIFY
+
+if popularity could reasonably mean different measurable things
+in the available database.
+
+Important:
+Do NOT decide the clarification options here.
+Only decide whether clarification is required.
+
+UNKNOWN
+
+Return UNKNOWN when the user's request cannot reasonably be answered
+using the available database schema.
+
+Examples:
+
+"show me employee salaries"
+when salary information does not exist.
+
+"what is today's weather?"
+when weather data does not exist.
+
+IMPORTANT RULES
+
+1. Never guess when the ambiguity could change the result.
+
+2. Do not over-clarify.
+If a reasonable and unambiguous interpretation exists, return CLEAR.
+
+3. Use the database schema to understand what information is actually available.
+
+4. Use previous conversation context.
+A question that looks ambiguous by itself may be clear from previous messages.
+
+5. If the user has already specified a metric or condition in the conversation,
+do not ask for it again.
+
+6. Do not generate SQL.
+
+7. Do not generate a clarification message.
+
+8. Return ONLY:
+CLEAR
+CLARIFY
+or
+UNKNOWN
+"""
+
+    # 1. OpenRouter
     try:
+
         url = "https://openrouter.ai/api/v1/chat/completions"
 
         response = requests.post(
@@ -83,8 +189,7 @@ def check_clarification(question, conversation_history=None):
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json"
             },
-            json={ 
-                
+            json={
                 "model": "openrouter/free",
                 "messages": [
                     {
@@ -92,19 +197,37 @@ def check_clarification(question, conversation_history=None):
                         "content": prompt
                     }
                 ]
-            }   
+            }
         )
-        response.raise_for_status()
-        data = response.json()
-        result = data["choices"][0]["message"]["content"].strip().upper()
-        print("Clarification Engine: OpenRouter")
-        return result
-    
-    except Exception as openrouter_error:
-        print("Clarification OpenRouter failed:", openrouter_error)
 
-    # Groq
+        response.raise_for_status()
+
+        data = response.json()
+
+        result = (
+            data["choices"][0]["message"]["content"]
+            .strip()
+            .upper()
+        )
+
+        print("Clarification Engine: OpenRouter")
+
+        if result in ["CLEAR", "CLARIFY", "UNKNOWN"]:
+            return result
+
+        return "CLEAR"
+
+    except Exception as openrouter_error:
+
+        print(
+            "Clarification OpenRouter failed:",
+            openrouter_error
+        )
+
+
+    # 2. Groq fallback
     try:
+
         response = groq_client.chat.completions.create(
             model="qwen/qwen3.8-27b",
             messages=[
@@ -115,17 +238,38 @@ def check_clarification(question, conversation_history=None):
             ]
         )
 
-        result = response.choices[0].message.content.strip().upper()
+        result = (
+            response.choices[0]
+            .message.content
+            .strip()
+            .upper()
+        )
 
         print("Clarification Engine: Groq")
-        return result
+
+        if result in ["CLEAR", "CLARIFY", "UNKNOWN"]:
+            return result
+
+        return "CLEAR"
 
     except Exception as groq_error:
-        print("Clarification Groq failed:", groq_error)
+
+        print(
+            "Clarification Groq failed:",
+            groq_error
+        )
 
     return "CLEAR"
 
-def generate_clarification(question, conversation_history=None):
+
+# --------------------------------------------------
+# Generate Clarification
+# --------------------------------------------------
+
+def generate_clarification(
+    question,
+    conversation_history=None
+):
 
     schema = get_schema()
 
@@ -146,36 +290,46 @@ Previous conversation:
 User question:
 {question}
 
-The user's question is ambiguous.
+The question is ambiguous.
 
-Your task:
-- Ask the user one clear clarification question.
-- Identify what part of the request is ambiguous.
-- Give 2 to 4 useful options based on the actual database schema.
-- Options must be meaningful and possible to calculate from the database.
+Generate a short clarification question and 2 to 4 useful options.
+
+Rules:
+
+- Options must be based on the actual database schema.
+- Options must be relevant to the user's question.
+- Do not use the same options for every question.
+- Infer the relevant entity from the user's question.
+- For customers, use customer-related measurable metrics.
+- For products, use product-related measurable metrics.
+- For orders, use order-related measurable metrics.
+- For employees, use employee-related measurable metrics.
+- Use only metrics that can actually be calculated from the database.
+- Do not invent database columns or information.
 - Do not generate SQL.
 - Do not answer the original question.
-- Respond in the same language/style used by the user.
-- If the user uses Hinglish, respond in natural Hinglish.
-- If the user uses Gujarati, respond in Gujarati.
-- If the user uses English, respond in English.
-- Keep the response short and conversational.
-- Do not mention that you are an AI model.
+- Respond in the same language/style as the user.
+- If the user uses Hinglish, use natural Hinglish.
+- If the user uses Gujarati, use Gujarati.
+- If the user uses English, use English.
+- Keep the clarification short and conversational.
 
-Example:
+Return ONLY valid JSON.
 
-User:
-show me 10 best customers
+Use exactly this structure:
 
-Response:
-I'm not sure what you mean by "best customers". How should I rank them?
-
-💰 Total spending
-🛒 Number of orders
-📦 Total quantity purchased
+{{
+    "question": "your clarification question",
+    "options": [
+        "option 1",
+        "option 2",
+        "option 3"
+    ]
+}}
 """
 
     try:
+
         url = "https://openrouter.ai/api/v1/chat/completions"
 
         response = requests.post(
@@ -199,94 +353,230 @@ I'm not sure what you mean by "best customers". How should I rank them?
 
         data = response.json()
 
-        clarification = data["choices"][0]["message"]["content"].strip()
+        result = (
+            data["choices"][0]["message"]["content"]
+            .strip()
+        )
 
-        print("Clarification Generator: OpenRouter")
+        # Remove Markdown JSON fences if model adds them
+        if result.startswith("```"):
+
+            result = (
+                result
+                .replace("```json", "")
+                .replace("```", "")
+                .strip()
+            )
+
+        clarification = json.loads(result)
+
+        # Basic validation
+        if not isinstance(clarification, dict):
+            raise ValueError(
+                "Invalid clarification format"
+            )
+
+        if "question" not in clarification:
+            raise ValueError(
+                "Clarification question missing"
+            )
+
+        if "options" not in clarification:
+            raise ValueError(
+                "Clarification options missing"
+            )
+
+        if not isinstance(
+            clarification["options"],
+            list
+        ):
+            raise ValueError(
+                "Clarification options must be a list"
+            )
+
+        if len(clarification["options"]) < 2:
+            raise ValueError(
+                "At least two clarification options required"
+            )
+
+        print(
+            "Clarification Generator: OpenRouter"
+        )
 
         return clarification
 
     except Exception as error:
-        print("Clarification Generator failed:", error)
 
-        return "Could you please clarify what you mean?"
+        print(
+            "Clarification Generator failed:",
+            error
+        )
 
-def generate_sql(question, conversation_history=None):
+        return {
+            "question": "Could you please clarify what you mean?",
+            "options": [
+                "Show the available information",
+                "Choose a specific metric"
+            ]
+        }
+
+
+def needs_semantic_layer(question):
+    keywords = [
+        "revenue",
+        "sales",
+        "profit",
+        "discount",
+        "average",
+        "total",
+        "highest",
+        "lowest",
+        "best",
+        "worst",
+        "most",
+        "least",
+        "top",
+        "bottom",
+        "per",
+        "each",
+        "between",
+        "compare",
+        "growth",
+        "trend",
+        "monthly",
+        "yearly",
+        "category wise",
+        "country wise",
+        "customer wise",
+        "product wise"
+    ]
+
+    question_lower = question.lower()
+
+    return any(
+        keyword in question_lower
+        for keyword in keywords
+    )
+
+# --------------------------------------------------
+# Generate SQL
+# --------------------------------------------------
+
+def generate_sql(
+    question,
+    conversation_history=None
+):
 
     schema = get_schema()
+    semantic_context = None
+
+    if needs_semantic_layer(question):
+        semantic_context = get_sql_generator_context(question)
     words = question.split()
 
     corrected_question = question
 
     for word in words:
+
         clean_word = word.strip(".,!?")
 
-        suggestion = suggest_keyword(clean_word)
+        suggestion = suggest_keyword(
+            clean_word
+        )
 
-        if suggestion and suggestion["type"] == "direct":
-            corrected_question = corrected_question.replace(
-                clean_word,
-                suggestion["keyword"]
+        if (
+            suggestion
+            and suggestion["type"] == "direct"
+        ):
+
+            corrected_question = (
+                corrected_question.replace(
+                    clean_word,
+                    suggestion["keyword"]
+                )
             )
-    
+
     database_keywords = get_database_keywords()
 
     if conversation_history:
-        conversation = "\n".join(conversation_history)
+
+        conversation = "\n".join(
+            conversation_history
+        )
+
     else:
+
         conversation = "no previous conversation"
 
     prompt = f"""
-    You are a Text-to-SQL assistant.
+You are a Text-to-SQL assistant.
 
-    Database schema:
-    {schema}
+Database schema:
+{schema}
 
-    Database keywords:
-    {database_keywords}
+Semantic Layer Context:
+{json.dumps(semantic_context, indent=2, ensure_ascii=False)}
 
-    previous conversation:
-    {conversation}
+Database keywords:
+{database_keywords}
 
-    User question:
-    {corrected_question}
+previous conversation:
+{conversation}
 
-    Instructions:
-    - Generate only a valid SQLite SQL query.
-    - Do not use Markdown.
-    - Do not wrap the query in ```sql or ``` blocks.
-    - Do not provide explanations.
-    - Only generate SELECT queries for data retrieval requests.
-    - If the user asks to INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, or perform any other data-changing/schema-changing operation, do not convert it into a SELECT query. Return exactly: UNSAFE_QUERY
-    - For text comparisons, use case-insensitive matching when appropriate (e.g. LOWER(column) = LOWER('value')).
-    - Never guess or invent a table or column when the user's request does not match the database schema.
-    - If the user's request refers to a table, column, or database entity that cannot be found or reasonably matched in the database schema, return exactly: UNKNOWN_QUERY
-    - If a table or column name contains spaces or special characters, always wrap it in double quotes.
-    
-    - Understand the user's question regardless of whether it is written in English, Hindi, Hinglish, or mixed language.
-    - Use the previous conversation to understand follow-up questions and references.
-    - Resolve contextual references such as "it", "they", "their", "those", "unki", "unke", "unka", "isme", etc. using the most relevant previous context.
-    - If the user mentions a new table or entity, treat it as a new context and do not incorrectly carry over the previous entity.
-    - When the user continues the same topic, preserve relevant filters and conditions from the previous conversation.
-    
-    """
+User question:
+{corrected_question}
+
+Instructions:
+
+- Generate only a valid SQLite SQL query.
+- Do not use Markdown.
+- Do not wrap the query in ```sql or ``` blocks.
+- Do not provide explanations.
+- Only generate SELECT queries for data retrieval requests.
+- If the user asks to INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, or perform any other data-changing/schema-changing operation, do not convert it into a SELECT query. Return exactly: UNSAFE_QUERY
+- For text comparisons, use case-insensitive matching when appropriate (e.g. LOWER(column) = LOWER('value')).
+- Never guess or invent a table or column when the user's request does not match the database schema.
+- If the user's request refers to a table, column, or database entity that cannot be found or reasonably matched in the database schema, return exactly: UNKNOWN_QUERY
+- If a table or column name contains spaces or special characters, always wrap it in double quotes.
+- Follow the Semantic Layer business rules exactly.
+- If a metric is provided by the Semantic Layer, use its exact SQL definition.
+- Do not replace or simplify metric formulas.
+- Use the relationships and filters provided by the Semantic Layer.
+
+- Understand the user's question regardless of whether it is written in English, Hindi, Hinglish, or mixed language.
+- Use the previous conversation to understand follow-up questions and references.
+- Resolve contextual references such as "it", "they", "their", "those", "unki", "unke", "unka", "isme", etc. using the most relevant previous context.
+- If the user mentions a new table or entity, treat it as a new context and do not incorrectly carry over the previous entity.
+- When the user continues the same topic, preserve relevant filters and conditions from the previous conversation.
+"""
 
     # 1. Gemini
     try:
+
         response = gemini_client.models.generate_content(
             model="gemini-3.8-flash",
             contents=prompt
         )
 
-        sql = clean_sql(response.text)
+        sql = clean_sql(
+            response.text
+        )
 
         print("Using: Gemini")
+
         return sql
 
     except Exception as gemini_error:
-        print("Gemini failed:", gemini_error)
+
+        print(
+            "Gemini failed:",
+            gemini_error
+        )
+
 
     # 2. Groq
     try:
+
         response = groq_client.chat.completions.create(
             model="qwen/qwen3.8-27b",
             messages=[
@@ -297,17 +587,30 @@ def generate_sql(question, conversation_history=None):
             ]
         )
 
-        sql = clean_sql(response.choices[0].message.content)
+        sql = clean_sql(
+            response.choices[0]
+            .message.content
+        )
 
         print("Using: Groq")
-        print("Groq SQL:", repr(sql))
+        print(
+            "Groq SQL:",
+            repr(sql)
+        )
+
         return sql
 
     except Exception as groq_error:
-        print("Groq failed:", groq_error)
+
+        print(
+            "Groq failed:",
+            groq_error
+        )
+
 
     # 3. Cloudflare
     try:
+
         url = (
             f"https://api.cloudflare.com/client/v4/accounts/"
             f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/"
@@ -317,8 +620,10 @@ def generate_sql(question, conversation_history=None):
         response = requests.post(
             url,
             headers={
-                "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
-                "Content-Type": "application/json"
+                "Authorization":
+                    f"Bearer {CLOUDFLARE_API_TOKEN}",
+                "Content-Type":
+                    "application/json"
             },
             json={
                 "messages": [
@@ -333,24 +638,40 @@ def generate_sql(question, conversation_history=None):
         response.raise_for_status()
 
         data = response.json()
+        result = data.get("result", {})
 
-        sql = clean_sql(data["choices"][0]["message"]["content"])
+        if "response" in result:
+            sql = clean_sql(result["response"])
+        else:
+            raise Exception(f"Unexpected Cloudflare response: {data}")
 
         print("Using: Cloudflare")
+        print("Cloudflare SQL:", repr(sql))
+
         return sql
 
     except Exception as cloudflare_error:
-        print("Cloudflare failed:", cloudflare_error)
+
+        print(
+            "Cloudflare failed:",
+            cloudflare_error
+        )
+
 
     # 4. OpenRouter
     try:
-        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        url = (
+            "https://openrouter.ai/api/v1/chat/completions"
+        )
 
         response = requests.post(
             url,
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
+                "Authorization":
+                    f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type":
+                    "application/json"
             },
             json={
                 "model": "openrouter/free",
@@ -367,12 +688,21 @@ def generate_sql(question, conversation_history=None):
 
         data = response.json()
 
-        sql = clean_sql(data["choices"][0]["message"]["content"])
+        sql = clean_sql(
+            data["choices"][0]["message"]["content"]
+        )
 
         print("Using: OpenRouter")
+
         return sql
 
     except Exception as openrouter_error:
-        print("OpenRouter failed:", openrouter_error)
 
-    raise Exception("All AI providers failed.")
+        print(
+            "OpenRouter failed:",
+            openrouter_error
+        )
+
+    raise Exception(
+        "All AI providers failed."
+    )

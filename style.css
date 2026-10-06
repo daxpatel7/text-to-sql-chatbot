@@ -1,0 +1,340 @@
+/* =========================================================
+   TEXT-TO-SQL AI — FINAL CHAT UI
+   ========================================================= */
+
+:root {
+    --bg: # 0E1117;
+    --sidebar: #171717;
+    --surface: #2f2f2f;
+    --surface-hover: #3a3a3a;
+    --border: #454545;
+    --text: #ececec;
+    --muted: #9b9b9b;
+    --accent: #10a37f;
+}
+
+.stApp {
+    background: var(--bg);
+    color: var(--text);
+}
+
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+.block-container {
+    max-width: 960px;
+    padding-top: 18px;
+    padding-bottom: 120px;
+}
+
+/* Hide Streamlit chrome */
+#MainMenu,
+footer {
+    visibility: hidden;
+}
+
+#stDeployButton {
+    display: none !important;
+}
+
+header {
+    background: transparent !important;
+}
+
+/* =========================================================
+   SIDEBAR
+   ========================================================= */
+
+section[data-testid="stSidebar"] {
+    background: var(--sidebar);
+    border-right: 1px solid #292929;
+}
+
+section[data-testid="stSidebar"] > div {
+    padding: 18px 14px;
+}
+
+.sidebar-title {
+    color: #f2f2f2;
+    font-size: 18px;
+    font-weight: 650;
+    padding: 8px 10px 18px;
+}
+
+.sidebar-section {
+    color: #8f8f8f;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 14px 10px 7px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+}
+
+section[data-testid="stSidebar"] .stButton > button {
+    width: 100%;
+    min-height: 42px;
+    background: transparent;
+    border: 1px solid #444;
+    color: #ededed;
+    border-radius: 9px;
+    text-align: left;
+    padding: 8px 13px;
+}
+
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background: #2c2c2c;
+    border-color: #555;
+}
+
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    color: #999;
+    padding-left: 10px;
+    line-height: 1.55;
+}
+
+/* =========================================================
+   TOP BAR
+   ========================================================= */
+
+.topbar {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    margin-bottom: 8px;
+}
+
+.brand-name {
+    color: #f0f0f0;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.brand-subtitle {
+    color: #929292;
+    font-size: 12px;
+    margin-top: 3px;
+}
+
+/* =========================================================
+   WELCOME SCREEN
+   ========================================================= */
+
+.welcome-wrap {
+    min-height: 61vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.welcome-title {
+    color: #f1f1f1;
+    font-size: 30px;
+    font-weight: 600;
+    line-height: 1.25;
+    margin: 14px 0 8px;
+}
+
+.welcome-text {
+    color: #999;
+    font-size: 14px;
+    line-height: 1.6;
+    max-width: 620px;
+}
+
+/* =========================================================
+   CHAT MESSAGES
+   ========================================================= */
+
+div[data-testid="stChatMessage"] {
+    background: transparent;
+    border: 0;
+    padding: 18px 8px;
+}
+
+div[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+    color: var(--text);
+    line-height: 1.65;
+}
+
+div[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p {
+    margin-bottom: 8px;
+}
+
+/* =========================================================
+   THINKING DOTS
+   ========================================================= */
+
+.thinking-dots {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+}
+
+.thinking-dots span {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #999;
+    animation: thinking 1.4s infinite ease-in-out;
+}
+
+.thinking-dots span:nth-child(2) {
+    animation-delay: .2s;
+}
+
+.thinking-dots span:nth-child(3) {
+    animation-delay: .4s;
+}
+
+@keyframes thinking {
+    0%, 60%, 100% {
+        opacity: .25;
+        transform: translateY(0);
+    }
+    30% {
+        opacity: 1;
+        transform: translateY(-3px);
+    }
+}
+
+/* =========================================================
+   SQL / RESULTS
+   ========================================================= */
+
+.sql-label,
+.result-label {
+    color: #a7a7a7;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 8px 0 6px;
+}
+
+div[data-testid="stCodeBlock"] {
+    border: 1px solid #414141;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+div[data-testid="stCodeBlock"] pre {
+    font-size: 13px !important;
+}
+
+div[data-testid="stDataFrame"] {
+    border: 1px solid #414141;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+/* =========================================================
+   CLARIFICATION
+   ========================================================= */
+
+.clarification-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 15px 17px;
+    margin: 4px 0 12px;
+}
+
+.clarification-title {
+    color: #eeeeee;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.5;
+}
+
+/* Radio options */
+div[role="radiogroup"] {
+    gap: 7px;
+}
+
+div[role="radiogroup"] label {
+    background: #292929;
+    border: 1px solid #404040;
+    border-radius: 9px;
+    padding: 9px 12px;
+}
+
+div[role="radiogroup"] label:hover {
+    background: #353535;
+    border-color: #555;
+}
+
+/* Continue button */
+button[kind="primary"] {
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
+    color: white !important;
+    border-radius: 9px !important;
+    font-weight: 600 !important;
+}
+
+button[kind="primary"]:hover {
+    filter: brightness(1.08);
+}
+
+/* =========================================================
+   GENERAL BUTTONS
+   ========================================================= */
+
+.stButton > button {
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    transition: .15s ease;
+}
+
+.stButton > button:hover {
+    background: var(--surface-hover);
+    border-color: #5a5a5a;
+}
+
+/* =========================================================
+   CHAT INPUT
+   ========================================================= */
+
+div[data-testid="stChatInput"] {
+    bottom: 18px;
+}
+
+div[data-testid="stChatInput"] > div {
+    background: #2f2f2f;
+    border: 1px solid #4b4b4b;
+    border-radius: 16px;
+    box-shadow: 0 5px 28px rgba(0, 0, 0, .30);
+}
+
+div[data-testid="stChatInput"] textarea {
+    color: #eeeeee;
+}
+
+div[data-testid="stChatInput"] textarea::placeholder {
+    color: #858585;
+}
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 768px) {
+    .block-container {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    .welcome-title {
+        font-size: 25px;
+    }
+
+    div[data-testid="stChatMessage"] {
+        padding: 14px 2px;
+    }
+}
