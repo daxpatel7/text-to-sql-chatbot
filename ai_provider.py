@@ -29,6 +29,187 @@ def clean_sql(sql):
 
     return sql
 
+def check_clarification(question, conversation_history=None):
+
+    schema = get_schema()
+
+    if conversation_history:
+        conversation = "\n".join(conversation_history)
+    else:
+        conversation = "no previous conversation"
+
+    prompt = f"""
+    You are a Query Clarification Engine for a Text-to-SQL chatbot.
+
+    Database schema:
+    {schema}
+
+    Previous conversation:
+    {conversation}
+
+    User question:
+    {question}
+
+    Your job is NOT to generate SQL.
+
+    Decide whether the user's question is clear enough to generate a correct SQL query.
+
+    Rules:
+    - If the question has a clear intent and required information is available, return exactly:
+    CLEAR
+
+    - If the question is ambiguous and guessing could produce a wrong result, return exactly:
+    CLARIFY
+
+    - If the requested information does not exist in the database, return exactly:
+    UNKNOWN
+
+    Important:
+    - Never guess the user's intended meaning.
+    - Words such as "best", "top", "good", "popular", "successful", etc. may be ambiguous when the ranking metric is not specified.
+    - If multiple reasonable interpretations exist, return CLARIFY.
+    - Consider the previous conversation when deciding whether the current question is clear.
+    - Understand English, Hindi, Hinglish, Gujarati, French, and other languages.
+    - Return only CLEAR, CLARIFY, or UNKNOWN.
+    """
+
+    # OpenRouter
+    try:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={ 
+                
+                "model": "openrouter/free",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }   
+        )
+        response.raise_for_status()
+        data = response.json()
+        result = data["choices"][0]["message"]["content"].strip().upper()
+        print("Clarification Engine: OpenRouter")
+        return result
+    
+    except Exception as openrouter_error:
+        print("Clarification OpenRouter failed:", openrouter_error)
+
+    # Groq
+    try:
+        response = groq_client.chat.completions.create(
+            model="qwen/qwen3.8-27b",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        result = response.choices[0].message.content.strip().upper()
+
+        print("Clarification Engine: Groq")
+        return result
+
+    except Exception as groq_error:
+        print("Clarification Groq failed:", groq_error)
+
+    return "CLEAR"
+
+def generate_clarification(question, conversation_history=None):
+
+    schema = get_schema()
+
+    if conversation_history:
+        conversation = "\n".join(conversation_history)
+    else:
+        conversation = "no previous conversation"
+
+    prompt = f"""
+You are a clarification assistant for a Text-to-SQL chatbot.
+
+Database schema:
+{schema}
+
+Previous conversation:
+{conversation}
+
+User question:
+{question}
+
+The user's question is ambiguous.
+
+Your task:
+- Ask the user one clear clarification question.
+- Identify what part of the request is ambiguous.
+- Give 2 to 4 useful options based on the actual database schema.
+- Options must be meaningful and possible to calculate from the database.
+- Do not generate SQL.
+- Do not answer the original question.
+- Respond in the same language/style used by the user.
+- If the user uses Hinglish, respond in natural Hinglish.
+- If the user uses Gujarati, respond in Gujarati.
+- If the user uses English, respond in English.
+- Keep the response short and conversational.
+- Do not mention that you are an AI model.
+
+Example:
+
+User:
+show me 10 best customers
+
+Response:
+I'm not sure what you mean by "best customers". How should I rank them?
+
+💰 Total spending
+🛒 Number of orders
+📦 Total quantity purchased
+"""
+
+    try:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "openrouter/free",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        clarification = data["choices"][0]["message"]["content"].strip()
+
+        print("Clarification Generator: OpenRouter")
+
+        return clarification
+
+    except Exception as error:
+        print("Clarification Generator failed:", error)
+
+        return "Could you please clarify what you mean?"
+
 def generate_sql(question, conversation_history=None):
 
     schema = get_schema()

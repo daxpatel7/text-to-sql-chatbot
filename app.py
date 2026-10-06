@@ -1,96 +1,44 @@
 import streamlit as st
-
 from dotenv import load_dotenv
-from schema import get_schema
-from ai_provider import generate_sql
-from database import validate_sql, execute_sql, suggest_keyword
+from pathlib import Path
 
+from ai_provider import generate_sql
+from semantic_layer import get_sql_generator_context
+from database import (validate_sql,execute_sql,suggest_keyword)
 
 load_dotenv()
 
-# Page Setup
+# =========================================================
+# PAGE SETUP
+# =========================================================
+
 st.set_page_config(
     page_title="Text-to-SQL AI",
     page_icon="logo.png",
-    layout="centered"
+    layout="wide"
 )
 
 
-# --------------------------------------------------
-# Custom UI
-# --------------------------------------------------
+# =========================================================
+# LOAD CSS
+# =========================================================
 
-st.markdown("""
-<style>
-    .block-container {
-        max-width: 750px;
-        padding-top: 2rem;
-        padding-bottom: 5rem;
-    }
+def load_css():
+    css_path = Path(__file__).parent / "style.css"
 
-    .app-header {
-        text-align: center;
-        margin-bottom: 2rem;
-    }
+    with open(css_path, "r", encoding="utf-8") as f:
+        st.markdown(
+            f"<style>{f.read()}</style>",
+            unsafe_allow_html=True
+        )
 
-    .app-title {
-        font-size: 2rem;
-        font-weight: 700;
-        margin-bottom: 0.3rem;
-    }
 
-    .app-subtitle {
-        color: #888;
-        font-size: 0.95rem;
-    }
+load_css()
 
-    .sql-label {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: #888;
-        margin-top: 0.5rem;
-        margin-bottom: 0.3rem;
-    }
 
-    .result-label {
-        font-size: 0.9rem;
-        font-weight: 600;
-        margin-top: 0.8rem;
-        margin-bottom: 0.4rem;
-    }
-
-    [data-testid="stChatMessage"] {
-        border-radius: 12px;
-    }
-</style>
-""", unsafe_allow_html=True)
-# Header
-
-st.markdown(
-    '<div class="app-header">',
-    unsafe_allow_html=True
-)
-
-st.image("logo.png", width=60)
-
-st.markdown(
-    '<div class="app-title">Text-to-SQL AI</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="app-subtitle">'
-    'Ask questions about your database in natural language.'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '</div>',
-    unsafe_allow_html=True
-)
-
-# Session State
+# =========================================================
+# SESSION STATE
+# =========================================================
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -101,7 +49,56 @@ if "pending_confirmation" not in st.session_state:
 if "confirmed_question" not in st.session_state:
     st.session_state.confirmed_question = None
 
-# Typo Confirmation
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+with st.sidebar:
+
+    st.markdown(
+        '<div class="sidebar-title">Text-to-SQL AI</div>',
+        unsafe_allow_html=True
+    )
+
+    if st.button("＋  New chat", width="stretch"):
+        st.session_state.messages = []
+        st.session_state.pending_confirmation = None
+        st.session_state.confirmed_question = None
+        st.rerun()
+
+    st.markdown(
+        '<div class="sidebar-section">Your database</div>',
+        unsafe_allow_html=True
+    )
+
+    st.caption("Northwind SQLite")
+
+    st.markdown("---")
+
+    st.caption("AI-powered natural language database assistant")
+
+
+# =========================================================
+# TOP BAR
+# =========================================================
+
+top_col1, top_col2 = st.columns([1, 5], vertical_alignment="center")
+
+with top_col1:
+    st.image("logo.png", width=38)
+
+with top_col2:
+    st.markdown(
+        '<div class="brand-name">Text-to-SQL AI</div>'
+        '<div class="brand-subtitle">Northwind Database</div>',
+        unsafe_allow_html=True
+    )
+
+
+# =========================================================
+# TYPO CONFIRMATION
+# =========================================================
 
 def find_confirmation(question):
 
@@ -121,13 +118,16 @@ def find_confirmation(question):
 
     return None
 
-# Conversation History
+
+# =========================================================
+# CONVERSATION HISTORY
+# =========================================================
 
 def get_conversation_history():
 
     conversation_history = []
 
-    for message in st.session_state.messages:
+    for message in st.session_state.messages[-6:]:
 
         if message["role"] == "user":
 
@@ -143,32 +143,110 @@ def get_conversation_history():
                     f"Assistant (SQL): {message['sql']}"
                 )
 
+            elif message.get("content"):
+
+                content = message["content"]
+
+                if isinstance(content, str):
+
+                    conversation_history.append(
+                        f"Assistant: {content}"
+                    )
+
     return conversation_history
 
-# Display Previous Messages
 
-for message in st.session_state.messages:
+# =========================================================
+# PROCESS QUESTION
+# =========================================================
 
-    with st.chat_message(message["role"]):
 
-        if message["type"] == "text":
+def process_question(question, skip_clarification=False):
 
-            st.write(message["content"])
+    conversation_history = get_conversation_history()
 
-        else:
+    with st.chat_message("assistant"):
 
-            if message.get("sql"):
+        thinking_placeholder = st.empty()
 
-                st.code(
-                    message["sql"],
-                    language="sql"
+        thinking_placeholder.markdown(
+            '<div class="thinking-dots">'
+            '<span></span><span></span><span></span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        try:
+
+            sql = generate_sql(
+                question,
+                conversation_history
+            )
+
+            thinking_placeholder.empty()
+
+            if sql.strip().upper() == "UNSAFE_QUERY":
+
+                message = (
+                    "The generated query is unsafe. "
+                    "Only SELECT queries are allowed."
                 )
 
-            if message["content"].empty:
+                st.markdown(message)
 
-                st.info("No data found.")
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "type": "text",
+                    "content": message
+                })
+
+                return
+
+            if sql.strip().upper() == "UNKNOWN_QUERY":
+
+                message = (
+                    "I couldn't find a matching table "
+                    "or column in the database."
+                )
+
+                st.markdown(message)
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "type": "text",
+                    "content": message
+                })
+
+                return
+
+            if not validate_sql(sql):
+
+                message = "The generated SQL query is invalid."
+
+                st.markdown(message)
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "type": "text",
+                    "content": message
+                })
+
+                return
+
+            df = execute_sql(sql)
+
+            if df.empty:
+
+                st.markdown("No data found.")
 
             else:
+
+                st.markdown(
+                    '<div class="sql-label">Generated SQL</div>',
+                    unsafe_allow_html=True
+                )
+
+                st.code(sql, language="sql")
 
                 st.markdown(
                     '<div class="result-label">Result</div>',
@@ -176,103 +254,136 @@ for message in st.session_state.messages:
                 )
 
                 st.dataframe(
-                    message["content"],
+                    df,
                     width="stretch",
                     hide_index=True
                 )
-# Process Question
 
-def process_question(question):
+            st.session_state.messages.append({
+                "role": "assistant",
+                "type": "table",
+                "content": df,
+                "sql": sql
+            })
 
-    conversation_history = get_conversation_history()
+        except Exception as e:
 
-    with st.chat_message("user"):
+            thinking_placeholder.empty()
 
-        st.write(question)
+            message = f"Something went wrong: {e}"
 
-    with st.chat_message("assistant"):
+            st.markdown(message)
 
-        with st.spinner("Thinking..."):
+            st.session_state.messages.append({
+                "role": "assistant",
+                "type": "text",
+                "content": message
+            })
 
-            try:
+# =========================================================
+# DISPLAY MESSAGES
+# =========================================================
 
-                sql = generate_sql(
-                    question,
-                    conversation_history
+for index, message in enumerate(st.session_state.messages):
+
+    with st.chat_message(message["role"]):
+
+        if message["type"] == "text":
+
+            st.write(message["content"])
+
+        elif message["type"] == "clarification":
+
+            clarification = message["content"]
+
+            question_text = clarification.get(
+                "question",
+                "Please clarify your question."
+            )
+
+            st.markdown(
+                f'<div class="clarification-card">'
+                f'<div class="clarification-title">{question_text}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            options = clarification.get("options", [])
+
+            if options:
+
+                selected_option = st.radio(
+                    "Choose an option",
+                    options,
+                    key=f"clarification_{index}",
+                    label_visibility="collapsed"
                 )
 
-                if sql.strip().upper() == "UNSAFE_QUERY":
+                if st.button(
+                    "Continue",
+                    key=f"continue_{index}",
+                    type="primary"
+                ):
 
-                    st.error(
-                        "The generated query is unsafe. "
-                        "Only SELECT queries are allowed."
+                    original_question = message.get(
+                        "original_question",
+                        ""
                     )
 
-                    return
-
-                if sql.strip().upper() == "UNKNOWN_QUERY":
-
-                    st.error(
-                        "I couldn't find a matching table "
-                        "or column in the database."
+                    combined_question = (
+                        f"{original_question}. {selected_option}"
                     )
 
-                    return
+                    st.session_state.messages.pop(index)
 
-                if not validate_sql(sql):
+                    st.session_state.messages.append({
+                        "role": "user",
+                        "type": "text",
+                        "content": combined_question
+                    })
 
-                    st.error(
-                        "The generated SQL query is invalid."
-                    )
+                    process_question(combined_question, skip_clarification=True)
+                    st.rerun()
 
-                    return
+        else:
+
+            if message.get("sql"):
 
                 st.markdown(
-                    '<div class="sql-label">'
-                    'Generated SQL'
-                    '</div>',
+                    '<div class="sql-label">Generated SQL</div>',
                     unsafe_allow_html=True
                 )
 
                 st.code(
-                    sql,
+                    message["sql"],
                     language="sql"
                 )
-                df = execute_sql(sql)
-                if df.empty:
+
+            content = message.get("content")
+
+            if content is not None:
+
+                if hasattr(content, "empty") and content.empty:
 
                     st.info("No data found.")
 
-                else:
+                elif hasattr(content, "empty"):
 
                     st.markdown(
-                        '<div class="result-label">'
-                        'Result'
-                        '</div>',
+                        '<div class="result-label">Result</div>',
                         unsafe_allow_html=True
                     )
 
                     st.dataframe(
-                        df,
+                        content,
                         width="stretch",
                         hide_index=True
                     )
 
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "type": "table",
-                    "content": df,
-                    "sql": sql
-                })
 
-
-            except Exception as e:
-
-                st.error(
-                    f"Something went wrong: {e}"
-                )
-
-# Pending Confirmation
+# =========================================================
+# PENDING TYPO CONFIRMATION
+# =========================================================
 
 if st.session_state.pending_confirmation:
 
@@ -286,10 +397,7 @@ if st.session_state.pending_confirmation:
 
     with col1:
 
-        if st.button(
-            "Yes",
-            width="stretch"
-        ):
+        if st.button("Yes", width="stretch"):
 
             corrected_question = (
                 confirmation["question"].replace(
@@ -299,19 +407,12 @@ if st.session_state.pending_confirmation:
             )
 
             st.session_state.pending_confirmation = None
-
-            st.session_state.confirmed_question = (
-                corrected_question
-            )
-
+            st.session_state.confirmed_question = corrected_question
             st.rerun()
 
     with col2:
 
-        if st.button(
-            "No",
-            width="stretch"
-        ):
+        if st.button("No", width="stretch"):
 
             st.session_state.pending_confirmation = None
 
@@ -323,7 +424,10 @@ if st.session_state.pending_confirmation:
 
             st.rerun()
 
-# Confirmed Question
+
+# =========================================================
+# CONFIRMED QUESTION
+# =========================================================
 
 if st.session_state.confirmed_question:
 
@@ -341,18 +445,44 @@ if st.session_state.confirmed_question:
 
     st.rerun()
 
-# Chat Input
-question = st.chat_input(
-    "Ask anything about your database..."
-)
 
+# =========================================================
+# WELCOME SCREEN
+# =========================================================
+
+if not st.session_state.messages:
+
+    st.markdown(
+        '<div class="welcome-wrap">',
+        unsafe_allow_html=True
+    )
+
+    st.image("logo.png", width=64)
+
+    st.markdown(
+        '<div class="welcome-title">How can I help with your database?</div>'
+        '<div class="welcome-text">'
+        'Ask questions about your Northwind database using normal English, '
+        'Hinglish or Gujarati.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================================
+# CHAT INPUT
+# =========================================================
+
+question = st.chat_input(
+    "Message Text-to-SQL AI..."
+)
 
 if question:
 
     confirmation = find_confirmation(question)
 
-    # Need Confirmation
-    
     if confirmation:
 
         st.session_state.pending_confirmation = confirmation
@@ -365,8 +495,6 @@ if question:
 
         st.rerun()
 
-    # Normal Question
-
     st.session_state.messages.append({
         "role": "user",
         "type": "text",
@@ -374,3 +502,5 @@ if question:
     })
 
     process_question(question)
+
+    st.rerun()
