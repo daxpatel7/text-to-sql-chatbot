@@ -515,6 +515,678 @@ def get_semantic_context(question=None):
         context["user_question"] = question
     return context
 
+def get_compact_semantic_context(question=None):
+    """
+    Return a compact semantic context containing only information
+    that is useful for the current SQL question.
+    """
+
+    context = get_semantic_context(question)
+
+    if not question:
+        return context
+
+    question_lower = question.lower()
+
+    # ---------------------------------------------------------
+    # 1. Detect tables/entities mentioned in the question
+    # ---------------------------------------------------------
+    table_keywords = {
+        "customer": "Customers",
+        "customers": "Customers",
+        "client": "Customers",
+        "clients": "Customers",
+        "buyer": "Customers",
+        "buyers": "Customers",
+
+        "product": "Products",
+        "products": "Products",
+        "item": "Products",
+        "items": "Products",
+
+        "order": "Orders",
+        "orders": "Orders",
+        "purchase": "Orders",
+        "purchases": "Orders",
+
+        "employee": "Employees",
+        "employees": "Employees",
+        "staff": "Employees",
+
+        "supplier": "Suppliers",
+        "suppliers": "Suppliers",
+        "vendor": "Suppliers",
+        "vendors": "Suppliers",
+
+        "category": "Categories",
+        "categories": "Categories",
+
+        "shipper": "Shippers",
+        "shippers": "Shippers",
+        "carrier": "Shippers",
+
+        "territory": "Territories",
+        "territories": "Territories",
+
+        "region": "Regions",
+        "regions": "Regions",
+    }
+
+    relevant_tables = set()
+
+    for keyword, table_name in table_keywords.items():
+        if keyword in question_lower:
+            relevant_tables.add(table_name)
+
+    # ---------------------------------------------------------
+    # 2. Detect requested metrics
+    # ---------------------------------------------------------
+    metric_keywords = {
+        "revenue": "Revenue",
+        "sales revenue": "Revenue",
+        "net sales": "Revenue",
+
+        "gross sales": "Gross Sales",
+
+        "discount": "Discount Amount",
+
+        "quantity sold": "Quantity Sold",
+        "units sold": "Quantity Sold",
+        "items sold": "Quantity Sold",
+        "most sold": "Quantity Sold",
+
+        "average order": "Average Order Value",
+
+        "average selling price": "Average Selling Price",
+        "average sold price": "Average Selling Price",
+
+        "average discount": "Average Discount",
+
+        "freight": "Freight Cost",
+        "shipping cost": "Freight Cost",
+
+        "products": "Product Count",
+        "product count": "Product Count",
+        "number of products": "Product Count",
+
+        "customers": "Customer Count",
+        "customer count": "Customer Count",
+        "number of customers": "Customer Count",
+
+        "employees": "Employee Count",
+        "employee count": "Employee Count",
+
+        "suppliers": "Supplier Count",
+        "supplier count": "Supplier Count",
+
+        "categories": "Category Count",
+        "category count": "Category Count",
+
+        "shippers": "Shipper Count",
+        "shipper count": "Shipper Count",
+
+        "territories": "Territory Count",
+        "territory count": "Territory Count",
+
+        "regions": "Region Count",
+        "region count": "Region Count",
+
+        "in stock": "Products In Stock",
+        "inventory": "Products In Stock",
+
+        "on order": "Products On Order",
+
+        "average price": "Average Product Price",
+        "mean product price": "Average Product Price",
+    }
+
+    relevant_metrics = {}
+
+    for keyword, metric_name in metric_keywords.items():
+        if keyword in question_lower:
+            if metric_name in context["metrics"]:
+                relevant_metrics[metric_name] = context["metrics"][metric_name]
+
+    # ---------------------------------------------------------
+    # 3. Add source tables required by selected metrics
+    # ---------------------------------------------------------
+    for metric in relevant_metrics.values():
+        source = metric.get("source", "")
+
+        for table_name in context["tables"]:
+            if table_name.lower() in source.lower():
+                relevant_tables.add(table_name)
+
+    # Revenue/sales always needs order details.
+    # Orders is only needed when the query explicitly requires
+    # order-level information or an order-based metric.
+    if any(word in question_lower for word in [
+        "revenue",
+        "sales",
+        "gross sales",
+        "discount",
+        "quantity sold",
+        "units sold",
+        "average selling price",
+    ]):
+        relevant_tables.add("Order Details")
+
+    # ---------------------------------------------------------
+    # 4. Add only the shortest relationship paths needed
+    # ---------------------------------------------------------
+    path_tables = set(relevant_tables)
+
+    table_list = list(relevant_tables)
+
+    for i, start_table in enumerate(table_list):
+        for end_table in table_list[i + 1:]:
+            path = get_relationship_path(start_table, end_table)
+
+            if path:
+                path_tables.update(path)
+
+    relevant_tables = path_tables
+
+    # ---------------------------------------------------------
+    # 5. Safety fallback
+    # ---------------------------------------------------------
+    if not relevant_tables:
+        # Keep only a minimal schema instead of sending
+        # the entire semantic layer.
+        relevant_tables = {
+            "Customers",
+            "Products",
+            "Orders",
+            "Order Details"
+        }
+
+    # ---------------------------------------------------------
+    # 6. Build compact table information
+    # ---------------------------------------------------------
+    compact_tables = {}
+
+    for table_name in relevant_tables:
+
+        if table_name not in context["tables"]:
+            continue
+
+        table_info = context["tables"][table_name]
+
+        columns = []
+
+        for column in table_info["columns"]:
+
+            # Always keep primary keys.
+            keep = column["primary_key_position"] > 0
+
+            # Keep foreign-key columns.
+            for fk in table_info["foreign_keys"]:
+                if fk["from_column"] == column["name"]:
+                    keep = True
+
+            # Keep columns explicitly mentioned in the question.
+            if column["name"].lower() in question_lower:
+                keep = True
+
+            # Keep columns whose meaning contains a useful
+            # question keyword.
+            meaning = column.get("meaning", "").lower()
+
+            for word in question_lower.split():
+                if len(word) >= 4 and word in meaning:
+                    keep = True
+                    break
+
+            # Keep metric columns.
+            for metric in relevant_metrics.values():
+                definition = metric.get("definition", "")
+                if column["name"] in definition:
+                    keep = True
+
+            if keep:
+                columns.append({
+                    "name": column["name"],
+                    "type": column["data_type"],
+                    "meaning": column["meaning"]
+                })
+
+        compact_tables[table_name] = {
+            "meaning": table_info["meaning"],
+            "columns": columns,
+            "foreign_keys": [
+                {
+                    "from": fk["from_column"],
+                    "to_table": fk["to_table"],
+                    "to": fk["to_column"]
+                }
+                for fk in table_info["foreign_keys"]
+                if fk["to_table"] in relevant_tables
+            ]
+        }
+
+    # ---------------------------------------------------------
+    # 7. Keep only relationships between selected tables
+    # ---------------------------------------------------------
+    relevant_relationships = []
+
+    for relationship in context["relationships"]:
+
+        if (
+            relationship["from_table"] in relevant_tables
+            and relationship["to_table"] in relevant_tables
+        ):
+            relevant_relationships.append({
+                "from": (
+                    relationship["from_table"]
+                    + "."
+                    + relationship["from_column"]
+                ),
+                "to": (
+                    relationship["to_table"]
+                    + "."
+                    + relationship["to_column"]
+                )
+            })
+
+    # ---------------------------------------------------------
+    # 8. Keep only business rules needed for selected metrics
+    # ---------------------------------------------------------
+    relevant_business_rules = []
+
+    for rule in context["business_rules"]:
+
+        rule_lower = rule.lower()
+
+        keep_rule = False
+
+        # Metric-specific rules
+        for metric_name in relevant_metrics:
+            metric_word = metric_name.lower()
+
+            if metric_word in rule_lower:
+                keep_rule = True
+
+        # Important SQL/database rules
+        if "order details" in rule_lower and (
+            "revenue" in question_lower
+            or "sales" in question_lower
+            or "quantity" in question_lower
+            or "price" in question_lower
+            or "discount" in question_lower
+        ):
+            keep_rule = True
+
+        if "quote it with double quotes" in rule_lower:
+            keep_rule = True
+
+        if "spaces or special characters" in rule_lower:
+            keep_rule = True
+
+        if keep_rule and rule not in relevant_business_rules:
+            relevant_business_rules.append(rule)
+
+    # Always keep these two important rules when applicable.
+    if (
+        "revenue" in question_lower
+        or "sales" in question_lower
+    ):
+        for rule in context["business_rules"]:
+            if (
+                "historical transaction price" in rule.lower()
+                or "products.unitprice" in rule.lower()
+            ):
+                if rule not in relevant_business_rules:
+                    relevant_business_rules.append(rule)
+
+    # ---------------------------------------------------------
+    # 9. Return compact context
+    # ---------------------------------------------------------
+    return {
+        "database": {
+            "name": "Northwind SQLite",
+            "dialect": "SQLite"
+        },
+        "tables": compact_tables,
+        "relationships": relevant_relationships,
+        "metrics": relevant_metrics,
+        "business_rules": relevant_business_rules
+    }
+def get_compact_semantic_context(question=None):
+    """
+    Return a compact semantic context containing only information
+    that is useful for the current SQL question.
+    """
+
+    context = get_semantic_context(question)
+
+    if not question:
+        return context
+
+    question_lower = question.lower()
+
+    # ---------------------------------------------------------
+    # 1. Detect tables/entities mentioned in the question
+    # ---------------------------------------------------------
+    table_keywords = {
+        "customer": "Customers",
+        "customers": "Customers",
+        "client": "Customers",
+        "clients": "Customers",
+        "buyer": "Customers",
+        "buyers": "Customers",
+
+        "product": "Products",
+        "products": "Products",
+        "item": "Products",
+        "items": "Products",
+
+        "order": "Orders",
+        "orders": "Orders",
+        "purchase": "Orders",
+        "purchases": "Orders",
+
+        "employee": "Employees",
+        "employees": "Employees",
+        "staff": "Employees",
+
+        "supplier": "Suppliers",
+        "suppliers": "Suppliers",
+        "vendor": "Suppliers",
+        "vendors": "Suppliers",
+
+        "category": "Categories",
+        "categories": "Categories",
+
+        "shipper": "Shippers",
+        "shippers": "Shippers",
+        "carrier": "Shippers",
+
+        "territory": "Territories",
+        "territories": "Territories",
+
+        "region": "Regions",
+        "regions": "Regions",
+    }
+
+    relevant_tables = set()
+
+    for keyword, table_name in table_keywords.items():
+        if keyword in question_lower:
+            relevant_tables.add(table_name)
+
+    # ---------------------------------------------------------
+    # 2. Detect requested metrics
+    # ---------------------------------------------------------
+    metric_keywords = {
+        "revenue": "Revenue",
+        "sales revenue": "Revenue",
+        "net sales": "Revenue",
+
+        "gross sales": "Gross Sales",
+
+        "discount": "Discount Amount",
+
+        "quantity sold": "Quantity Sold",
+        "units sold": "Quantity Sold",
+        "items sold": "Quantity Sold",
+        "most sold": "Quantity Sold",
+
+        "average order": "Average Order Value",
+
+        "average selling price": "Average Selling Price",
+        "average sold price": "Average Selling Price",
+
+        "average discount": "Average Discount",
+
+        "freight": "Freight Cost",
+        "shipping cost": "Freight Cost",
+
+        "products": "Product Count",
+        "product count": "Product Count",
+        "number of products": "Product Count",
+
+        "customers": "Customer Count",
+        "customer count": "Customer Count",
+        "number of customers": "Customer Count",
+
+        "employees": "Employee Count",
+        "employee count": "Employee Count",
+
+        "suppliers": "Supplier Count",
+        "supplier count": "Supplier Count",
+
+        "categories": "Category Count",
+        "category count": "Category Count",
+
+        "shippers": "Shipper Count",
+        "shipper count": "Shipper Count",
+
+        "territories": "Territory Count",
+        "territory count": "Territory Count",
+
+        "regions": "Region Count",
+        "region count": "Region Count",
+
+        "in stock": "Products In Stock",
+        "inventory": "Products In Stock",
+
+        "on order": "Products On Order",
+
+        "average price": "Average Product Price",
+        "mean product price": "Average Product Price",
+    }
+
+    relevant_metrics = {}
+
+    for keyword, metric_name in metric_keywords.items():
+        if keyword in question_lower:
+            if metric_name in context["metrics"]:
+                relevant_metrics[metric_name] = context["metrics"][metric_name]
+
+    # ---------------------------------------------------------
+    # 3. Add source tables required by selected metrics
+    # ---------------------------------------------------------
+    for metric in relevant_metrics.values():
+        source = metric.get("source", "")
+
+        for table_name in context["tables"]:
+            if table_name.lower() in source.lower():
+                relevant_tables.add(table_name)
+
+    # Revenue/sales always needs order details.
+    # Orders is only needed when the query explicitly requires
+    # order-level information or an order-based metric.
+    if any(word in question_lower for word in [
+        "revenue",
+        "sales",
+        "gross sales",
+        "discount",
+        "quantity sold",
+        "units sold",
+        "average selling price",
+    ]):
+        relevant_tables.add("Order Details")
+
+    # ---------------------------------------------------------
+    # 4. Add only the shortest relationship paths needed
+    # ---------------------------------------------------------
+    path_tables = set(relevant_tables)
+
+    table_list = list(relevant_tables)
+
+    for i, start_table in enumerate(table_list):
+        for end_table in table_list[i + 1:]:
+            path = get_relationship_path(start_table, end_table)
+
+            if path:
+                path_tables.update(path)
+
+    relevant_tables = path_tables
+
+    # ---------------------------------------------------------
+    # 5. Safety fallback
+    # ---------------------------------------------------------
+    if not relevant_tables:
+        # Keep only a minimal schema instead of sending
+        # the entire semantic layer.
+        relevant_tables = {
+            "Customers",
+            "Products",
+            "Orders",
+            "Order Details"
+        }
+
+    # ---------------------------------------------------------
+    # 6. Build compact table information
+    # ---------------------------------------------------------
+    compact_tables = {}
+
+    for table_name in relevant_tables:
+
+        if table_name not in context["tables"]:
+            continue
+
+        table_info = context["tables"][table_name]
+
+        columns = []
+
+        for column in table_info["columns"]:
+
+            # Always keep primary keys.
+            keep = column["primary_key_position"] > 0
+
+            # Keep foreign-key columns.
+            for fk in table_info["foreign_keys"]:
+                if fk["from_column"] == column["name"]:
+                    keep = True
+
+            # Keep columns explicitly mentioned in the question.
+            if column["name"].lower() in question_lower:
+                keep = True
+
+            # Keep columns whose meaning contains a useful
+            # question keyword.
+            meaning = column.get("meaning", "").lower()
+
+            for word in question_lower.split():
+                if len(word) >= 4 and word in meaning:
+                    keep = True
+                    break
+
+            # Keep metric columns.
+            for metric in relevant_metrics.values():
+                definition = metric.get("definition", "")
+                if column["name"] in definition:
+                    keep = True
+
+            if keep:
+                columns.append({
+                    "name": column["name"],
+                    "type": column["data_type"],
+                    "meaning": column["meaning"]
+                })
+
+        compact_tables[table_name] = {
+            "meaning": table_info["meaning"],
+            "columns": columns,
+            "foreign_keys": [
+                {
+                    "from": fk["from_column"],
+                    "to_table": fk["to_table"],
+                    "to": fk["to_column"]
+                }
+                for fk in table_info["foreign_keys"]
+                if fk["to_table"] in relevant_tables
+            ]
+        }
+
+    # ---------------------------------------------------------
+    # 7. Keep only relationships between selected tables
+    # ---------------------------------------------------------
+    relevant_relationships = []
+
+    for relationship in context["relationships"]:
+
+        if (
+            relationship["from_table"] in relevant_tables
+            and relationship["to_table"] in relevant_tables
+        ):
+            relevant_relationships.append({
+                "from": (
+                    relationship["from_table"]
+                    + "."
+                    + relationship["from_column"]
+                ),
+                "to": (
+                    relationship["to_table"]
+                    + "."
+                    + relationship["to_column"]
+                )
+            })
+
+    # ---------------------------------------------------------
+    # 8. Keep only business rules needed for selected metrics
+    # ---------------------------------------------------------
+    relevant_business_rules = []
+
+    for rule in context["business_rules"]:
+
+        rule_lower = rule.lower()
+
+        keep_rule = False
+
+        # Metric-specific rules
+        for metric_name in relevant_metrics:
+            metric_word = metric_name.lower()
+
+            if metric_word in rule_lower:
+                keep_rule = True
+
+        # Important SQL/database rules
+        if "order details" in rule_lower and (
+            "revenue" in question_lower
+            or "sales" in question_lower
+            or "quantity" in question_lower
+            or "price" in question_lower
+            or "discount" in question_lower
+        ):
+            keep_rule = True
+
+        if "quote it with double quotes" in rule_lower:
+            keep_rule = True
+
+        if "spaces or special characters" in rule_lower:
+            keep_rule = True
+
+        if keep_rule and rule not in relevant_business_rules:
+            relevant_business_rules.append(rule)
+
+    # Always keep these two important rules when applicable.
+    if (
+        "revenue" in question_lower
+        or "sales" in question_lower
+    ):
+        for rule in context["business_rules"]:
+            if (
+                "historical transaction price" in rule.lower()
+                or "products.unitprice" in rule.lower()
+            ):
+                if rule not in relevant_business_rules:
+                    relevant_business_rules.append(rule)
+
+    # ---------------------------------------------------------
+    # 9. Return compact context
+    # ---------------------------------------------------------
+    return {
+        "database": {
+            "name": "Northwind SQLite",
+            "dialect": "SQLite"
+        },
+        "tables": compact_tables,
+        "relationships": relevant_relationships,
+        "metrics": relevant_metrics,
+        "business_rules": relevant_business_rules
+    }
 
 def get_semantic_context_text(question=None):
     return json.dumps(get_semantic_context(question), indent=2, ensure_ascii=False)
@@ -589,11 +1261,13 @@ Rules:
 
 def get_sql_generator_context(question):
     """Return semantic knowledge + interpreted meaning for generate_sql()."""
-    semantic_context = get_semantic_context(question)
-    try:
-        meaning = parse_semantic(question)
-    except Exception as exc:
-        meaning = {"status": "unavailable", "reason": str(exc)}
+
+    semantic_context = get_compact_semantic_context(question)
+    
+    meaning = {
+    "status": "unavailable",
+    "reason": "Semantic interpretation disabled for token optimization."
+    }
 
     return {
         "semantic_layer": semantic_context,
