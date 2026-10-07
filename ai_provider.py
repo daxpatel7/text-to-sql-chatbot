@@ -537,31 +537,6 @@ Rules:
 - Preserve filters, grouping, sorting, LIMIT, and relevant previous context.
 - Resolve follow-up references such as it, they, those, unke, unki, unka, isme from previous conversation.
 """
-
-    # 1. Gemini
-    try:
-
-        response = gemini_client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt
-        )
-
-        sql = clean_sql(
-            response.text
-        )
-
-        print("Using: Gemini")
-
-        return sql
-
-    except Exception as gemini_error:
-
-        print(
-            "Gemini failed:",
-            gemini_error
-        )
-
-
     # 2. Groq
     try:
 

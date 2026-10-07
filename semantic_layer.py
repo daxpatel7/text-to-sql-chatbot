@@ -1260,30 +1260,9 @@ Rules:
 
 
 def get_sql_generator_context(question):
-    """Return semantic knowledge + interpreted meaning for generate_sql()."""
-
-    semantic_context = get_compact_semantic_context(question)
-    
-    meaning = {
-    "status": "unavailable",
-    "reason": "Semantic interpretation disabled for token optimization."
-    }
 
     return {
-        "semantic_layer": semantic_context,
-        "interpreted_question": meaning,
-        "sql_rules": [
-            "Generate SQLite SQL only.",
-            "Generate one statement only.",
-            "Generate SELECT only.",
-            "Use only tables and columns present in the semantic layer.",
-            "Use the declared foreign-key relationships for joins.",
-            "Follow metric definitions exactly.",
-            "Use DISTINCT where the semantic metric requires it.",
-            "Avoid duplicating order-level metrics after line-item joins.",
-            "Quote identifiers containing spaces or special characters with double quotes.",
-            "Do not use Products.UnitPrice for historical revenue when Order Details.UnitPrice is available.",
-        ],
+        "semantic_layer": get_compact_semantic_context(question)
     }
 
 
