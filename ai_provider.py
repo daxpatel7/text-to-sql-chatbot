@@ -1,4 +1,5 @@
 import os
+from click import prompt
 import requests
 import json
 
@@ -509,45 +510,32 @@ def generate_sql(
         conversation = "no previous conversation"
 
     prompt = f"""
-You are a Text-to-SQL assistant.
+You are a Text-to-SQL assistant for a Northwind SQLite database.
 
-Database schema:
-{schema}
+Semantic context:
+{json.dumps(semantic_context, separators=(",", ":"), ensure_ascii=False)}
 
-Semantic Layer Context:
-{json.dumps(semantic_context, indent=2, ensure_ascii=False)}
-
-Database keywords:
-{database_keywords}
-
-previous conversation:
+Previous conversation:
 {conversation}
 
 User question:
 {corrected_question}
 
-Instructions:
-
-- Generate only a valid SQLite SQL query.
-- Do not use Markdown.
-- Do not wrap the query in ```sql or ``` blocks.
-- Do not provide explanations.
-- Only generate SELECT queries for data retrieval requests.
-- If the user asks to INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, or perform any other data-changing/schema-changing operation, do not convert it into a SELECT query. Return exactly: UNSAFE_QUERY
-- For text comparisons, use case-insensitive matching when appropriate (e.g. LOWER(column) = LOWER('value')).
-- Never guess or invent a table or column when the user's request does not match the database schema.
-- If the user's request refers to a table, column, or database entity that cannot be found or reasonably matched in the database schema, return exactly: UNKNOWN_QUERY
-- If a table or column name contains spaces or special characters, always wrap it in double quotes.
-- Follow the Semantic Layer business rules exactly.
-- If a metric is provided by the Semantic Layer, use its exact SQL definition.
-- Do not replace or simplify metric formulas.
-- Use the relationships and filters provided by the Semantic Layer.
-
-- Understand the user's question regardless of whether it is written in English, Hindi, Hinglish, or mixed language.
-- Use the previous conversation to understand follow-up questions and references.
-- Resolve contextual references such as "it", "they", "their", "those", "unki", "unke", "unka", "isme", etc. using the most relevant previous context.
-- If the user mentions a new table or entity, treat it as a new context and do not incorrectly carry over the previous entity.
-- When the user continues the same topic, preserve relevant filters and conditions from the previous conversation.
+Rules:
+- Return only one valid SQLite SELECT query.
+- Return no Markdown, explanation, or code fences.
+- For INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, or other data/schema changes, return exactly UNSAFE_QUERY.
+- If the request cannot be matched to the supplied schema/semantic context, return exactly UNKNOWN_QUERY.
+- Never invent tables, columns, relationships, or metrics.
+- Follow semantic metric definitions exactly; never simplify or replace them.
+- Use declared relationships for joins.
+- Use DISTINCT when required by a metric.
+- Avoid duplicating order-level values after line-item joins.
+- Quote identifiers containing spaces or special characters with double quotes.
+- Use case-insensitive text matching when appropriate.
+- Understand English, Hindi, Hinglish, and Gujarati.
+- Preserve filters, grouping, sorting, LIMIT, and relevant previous context.
+- Resolve follow-up references such as it, they, those, unke, unki, unka, isme from previous conversation.
 """
 
     # 1. Gemini
@@ -586,6 +574,10 @@ Instructions:
                 }
             ]
         )
+        print("\n===== GROQ INPUT =====")
+        print(prompt)
+        print("===== GROQ INPUT END =====")
+        print("Prompt characters:", len(prompt))
 
         sql = clean_sql(
             response.choices[0]

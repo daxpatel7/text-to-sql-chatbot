@@ -1,0 +1,3 @@
+﻿id,category,lang,question,expected,status,verdict,reason,provider,max_prompt_tokens,seconds,attempts,sql
+1,basic,en,show all customers,sql,RESULT,PASS,,Groq,1334,12.3,OpenRouter+(1164) > Geminix(1334) > Groq+(1334),SELECT * FROM Customers
+2,basic,en,how many customers are there,sql,RESULT,PASS,,Groq,1336,12.4,OpenRouter+(1166) > Geminix(1336) > Groq+(1336),SELECT COUNT(*) FROM Customers

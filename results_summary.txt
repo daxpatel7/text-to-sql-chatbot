@@ -1,0 +1,19 @@
+==============================================================
+TOTAL questions : 2
+ACCURACY        : 2/2  (100%)
+ERROR (all AI providers failed, not counted): 0
+==============================================================
+
+By category
+  basic      2/2  (100%)
+
+By language
+  en         2/2  (100%)
+
+Clarification engine
+  asked when it should have : 0/0
+  asked on a CLEAR question : 0/2  (over-clarify)
+
+Provider that answered : Groq x2
+Biggest prompt (rough tokens): avg 1335, max 1336
+Time per question: avg 12.4s, max 12.4s
