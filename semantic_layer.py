@@ -244,6 +244,17 @@ METRICS = {
         "source": "Order Details",
         "synonyms": ["units sold", "items sold", "quantity sold", "sales quantity", "most sold"],
     },
+    "Average Customer Revenue": {
+    "definition": "AVG(customer-level Revenue)",
+    "aggregation": "AVG",
+    "meaning": "Average of each customer's total discounted revenue.",
+    "source": "Customers + Orders + Order Details",
+    "synonyms": [
+        "average customer revenue",
+        "average revenue per customer",
+        "customer average revenue"
+    ],
+    },
     "Average Order Value": {
         "definition": 'SUM("Order Details"."UnitPrice" * "Order Details"."Quantity" * (1 - "Order Details"."Discount")) / COUNT(DISTINCT "Orders"."OrderID")',
         "aggregation": "RATIO",
@@ -419,6 +430,7 @@ BUSINESS_RULES = [
     "For 'most expensive products', use Products.UnitPrice unless the user explicitly asks for historical selling price.",
     "For 'best customers', do not assume a metric. If no metric is specified, the intent is ambiguous and should be clarified.",
     "For 'best customers by revenue', group at customer level and use discounted Revenue.",
+    "Average customer revenue means the average of customer-level total Revenue. First calculate total discounted Revenue for each customer, then take AVG of those customer totals. Do not calculate it as total Revenue / customer count or Revenue / order count.",
     "For 'best customers by orders', group at customer level and use distinct Order Count.",
     "For top/bottom N requests, preserve the requested N as LIMIT and sort the selected metric in the requested direction.",
     "Do not invent tables, columns, metrics or relationships that are not present in this semantic layer.",

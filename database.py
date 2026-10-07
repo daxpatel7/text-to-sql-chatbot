@@ -88,14 +88,13 @@ def validate_sql(sql):
         parsed = statements[0]
 
         # Only SELECT queries are allowed
-        if parsed.key != "select":
+        if not parsed.find(sqlglot.exp.Select):
             return False
 
         return True
 
     except Exception:
         return False
-
 
 def execute_sql(sql):
     try:

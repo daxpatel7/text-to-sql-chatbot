@@ -314,6 +314,11 @@ Rules:
 - If the user uses Gujarati, use Gujarati.
 - If the user uses English, use English.
 - Keep the clarification short and conversational.
+- For top N or highest/lowest items within each group, use ROW_NUMBER() or RANK() with PARTITION BY inside a subquery or CTE, then filter the rank in the outer query.
+- For per-group top N queries, do not rely only on ORDER BY; explicitly rank/filter within each group.
+- For top N items within each group, use ROW_NUMBER() or RANK() with PARTITION BY inside a subquery or CTE, then filter the rank in the outer query.
+- SQLite does not support QUALIFY; never use QUALIFY.
+- Return only the final SQL query. Never include reasoning, comments, explanations, or alternative queries.
 
 Return ONLY valid JSON.
 
@@ -536,6 +541,13 @@ Rules:
 - Understand English, Hindi, Hinglish, and Gujarati.
 - Preserve filters, grouping, sorting, LIMIT, and relevant previous context.
 - Resolve follow-up references such as it, they, those, unke, unki, unka, isme from previous conversation.
+- For top N items within each group, first calculate the aggregate value for each item, then rank items using ROW_NUMBER() or RANK() OVER (PARTITION BY group_column ORDER BY aggregate_value DESC), and filter the rank in an outer query.
+- For per-group top N queries, never use a final/global LIMIT N because it limits the entire result instead of each group.
+- SQLite does not support QUALIFY. Use a subquery or CTE with ROW_NUMBER() or RANK(), then filter the rank in the outer SELECT.
+- When a table is assigned an alias, use only that alias for every reference to that table throughout the query.
+- Never reference the original table name after assigning an alias.
+- For "above/below average per group" queries, first calculate the requested metric at the individual entity level, then calculate the group's average of those entity-level metrics using AVG(metric) OVER (PARTITION BY group_column). Never apply AVG() directly to the group/category column or raw joined rows.
+- Before returning SQL, verify that every column reference uses the correct table name or its assigned alias.
 """
     # 2. Groq
     try:

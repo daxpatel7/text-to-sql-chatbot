@@ -70,13 +70,7 @@ with st.sidebar:
     st.markdown(
         '<div class="sidebar-section">Your database</div>',
         unsafe_allow_html=True
-    )
-
-    st.caption("Northwind SQLite")
-
-    st.markdown("---")
-
-    st.caption("AI-powered natural language database assistant")
+    )   
 
 
 # =========================================================
@@ -399,12 +393,7 @@ if st.session_state.pending_confirmation:
 
         if st.button("Yes", width="stretch"):
 
-            corrected_question = (
-                confirmation["question"].replace(
-                    confirmation["original_word"],
-                    confirmation["suggested_word"]
-                )
-            )
+            corrected_question = confirmation["question"]
 
             st.session_state.pending_confirmation = None
             st.session_state.confirmed_question = corrected_question
