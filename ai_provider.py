@@ -428,7 +428,8 @@ Use exactly this structure:
 
 
 def needs_semantic_layer(question):
-    keywords = [
+
+    semantic_keywords = [
         "revenue",
         "sales",
         "profit",
@@ -459,10 +460,27 @@ def needs_semantic_layer(question):
 
     question_lower = question.lower()
 
-    return any(
-        keyword in question_lower
-        for keyword in keywords
-    )
+    # Direct keyword check
+    for keyword in semantic_keywords:
+        if keyword in question_lower:
+            return True
+
+    # Typo-aware semantic keyword detection
+    words = question_lower.split()
+
+    for word in words:
+
+        clean_word = word.strip(".,!?")
+
+        suggestion = suggest_keyword(clean_word)
+
+        if suggestion:
+            suggested_keyword = suggestion.get("keyword", "").lower()
+
+            if suggested_keyword in semantic_keywords:
+                return True
+
+    return False
 
 # --------------------------------------------------
 # Generate SQL
@@ -536,7 +554,7 @@ Rules:
 - Use declared relationships for joins.
 - Use DISTINCT when required by a metric.
 - Avoid duplicating order-level values after line-item joins.
-- Quote identifiers containing spaces or special characters with double quotes.
+- - Always use double quotes for SQLite identifiers that contain spaces or special characters. Never use backticks (`) for identifiers. For example, use "Order Details", not `Order Details`.
 - Use case-insensitive text matching when appropriate.
 - Understand English, Hindi, Hinglish, and Gujarati.
 - Preserve filters, grouping, sorting, LIMIT, and relevant previous context.

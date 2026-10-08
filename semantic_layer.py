@@ -434,6 +434,7 @@ BUSINESS_RULES = [
     "For 'best customers by orders', group at customer level and use distinct Order Count.",
     "For top/bottom N requests, preserve the requested N as LIMIT and sort the selected metric in the requested direction.",
     "Do not invent tables, columns, metrics or relationships that are not present in this semantic layer.",
+    "Out of stock means Products.UnitsInStock = 0. Do not include Discontinued products unless the user explicitly asks for discontinued products.",
 ]
 
 

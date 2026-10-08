@@ -1,19 +1,25 @@
 ==============================================================
-TOTAL questions : 2
-ACCURACY        : 2/2  (100%)
+TOTAL questions : 10
+ACCURACY        : 8/10  (80%)
 ERROR (all AI providers failed, not counted): 0
 ==============================================================
 
 By category
-  basic      2/2  (100%)
+  basic      8/10  (80%)
 
 By language
-  en         2/2  (100%)
+  en         8/10  (80%)
 
 Clarification engine
   asked when it should have : 0/0
-  asked on a CLEAR question : 0/2  (over-clarify)
+  asked on a CLEAR question : 0/10  (over-clarify)
 
-Provider that answered : Groq x2
-Biggest prompt (rough tokens): avg 1335, max 1336
-Time per question: avg 12.4s, max 12.4s
+Provider that answered : Groq x10
+Biggest prompt (rough tokens): avg 1167, max 1169
+Time per question: avg 6.9s, max 17.1s
+
+FAILED questions
+  # 8 [basic] how many records are in order details
+       -> generated SQL is not a valid single SELECT
+  # 9 [basic] which products are out of stock
+       -> result differs from the gold answer
