@@ -1,8 +1,10 @@
+from functools import lru_cache
 from sqlalchemy import create_engine, inspect
 
 engine = create_engine("sqlite:///northwind.db")
 
 
+@lru_cache(maxsize=1)
 def get_schema():
     inspector = inspect(engine)
 

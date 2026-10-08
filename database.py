@@ -1,20 +1,54 @@
 import pandas as pd
 import sqlglot
-
-from sqlalchemy import create_engine, text
-from sqlalchemy import inspect
+from functools import lru_cache
 from difflib import SequenceMatcher
+from sqlalchemy import create_engine, inspect, text
 
 engine = create_engine("sqlite:///northwind.db")
 
+FORBIDDEN_EXPRESSIONS = (
+    sqlglot.exp.Drop,
+    sqlglot.exp.Delete,
+    sqlglot.exp.Update,
+    sqlglot.exp.Insert,
+    sqlglot.exp.Alter,
+    sqlglot.exp.Create,
+    sqlglot.exp.Command,
+)
+
+COMMON_IGNORE_WORDS = {
+    "show", "list", "find", "give", "from", "with", "have", "what", "which",
+    "where", "when", "many", "much", "each", "every", "more", "less", "than",
+    "over", "under", "into", "then", "also", "only", "total", "some", "most",
+    "best", "worst", "that", "this", "these", "those", "their", "there",
+    "hain", "karo", "kare", "kaun", "kise", "kitne", "kitna", "dikha", "dikhao",
+    "batao", "bata", "wala", "wali", "wale", "che", "chhe", "ketla", "sauthi",
+    "saras", "unke", "unki", "unka", "inme", "isse", "iska", "sabse", "zyada",
+    "jyada", "adhik", "sara", "data", "date", "year", "month", "price",
+}
+
+
+@lru_cache(maxsize=1)
+def get_database_keywords():
+    inspector = inspect(engine)
+    keywords = []
+
+    for table in inspector.get_table_names():
+        if table == "sqlite_sequence":
+            continue
+        keywords.append(table)
+        for column in inspector.get_columns(table):
+            keywords.append(column['name'])
+
+    return keywords
+
+
 def find_similar_keywords(word, keywords):
     matches = []
-
     word = word.lower()
 
     for keyword in keywords:
         keyword_lower = keyword.lower()
-
         similarity = SequenceMatcher(
             None,
             word,
@@ -28,21 +62,26 @@ def find_similar_keywords(word, keywords):
         key=lambda x: x[1],
         reverse=True
     )
-
     return matches
 
-def suggest_keyword(word):
-    keywords = get_database_keywords()
 
-    matches = find_similar_keywords(word, keywords)
+def suggest_keyword(word):
+    clean = word.strip().lower()
+
+    # Very short words, numbers, or common words should not trigger typo correction
+    if len(clean) <= 3 or clean.isdigit() or clean in COMMON_IGNORE_WORDS:
+        return None
+
+    keywords = get_database_keywords()
+    matches = find_similar_keywords(clean, keywords)
 
     if not matches:
         return None
 
     best_match, best_score = matches[0]
 
-    # Very short/common words should not trigger typo correction
-    if len(word) <= 3:
+    # Exact match already
+    if best_score >= 0.99 or clean == best_match.lower():
         return None
 
     # Very high confidence → automatically correct
@@ -63,29 +102,25 @@ def suggest_keyword(word):
 
     return None
 
-def get_database_keywords():
-    inspector = inspect(engine)
-    tables = inspector.get_table_names()
-
-    keywords = []
-
-    for table in inspector.get_table_names():
-        keywords.append(table)
-        
-        for column in inspector.get_columns(table):
-            keywords.append(column['name'])
-
-    return keywords
 
 def validate_sql(sql):
     try:
-        statements = sqlglot.parse(sql)
+        sql_clean = (sql or "").strip()
+        if not sql_clean:
+            return False
+
+        statements = sqlglot.parse(sql_clean)
 
         # Only one SQL statement is allowed
-        if len(statements) != 1:
+        if len(statements) != 1 or statements[0] is None:
             return False
 
         parsed = statements[0]
+
+        # Disallow forbidden data or schema modifying statements
+        for forbidden in FORBIDDEN_EXPRESSIONS:
+            if parsed.find(forbidden):
+                return False
 
         # Only SELECT queries are allowed
         if not parsed.find(sqlglot.exp.Select):
@@ -96,14 +131,14 @@ def validate_sql(sql):
     except Exception:
         return False
 
+
 def execute_sql(sql):
     try:
         with engine.connect() as connection:
             result = connection.execute(text(sql))
-
             return pd.DataFrame(
                 result.fetchall(),
                 columns=result.keys()
             )
     except Exception as e:
-        raise Exception(f"Database error: {e}")
+        raise Exception(f"Database error: {e}")

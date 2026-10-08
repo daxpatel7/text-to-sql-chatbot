@@ -1,39 +1,43 @@
 import os
-from click import prompt
-import requests
 import json
-
+import requests
 from dotenv import load_dotenv
 from groq import Groq
 from google import genai
 
 from schema import get_schema
 from database import get_database_keywords, suggest_keyword
-from semantic_layer import get_sql_generator_context
-
+from semantic_layer import (
+    get_sql_generator_context,
+    needs_semantic_layer,
+    check_clarification,
+    get_clarification_options,
+    clarification_display_options,
+    normalize_clarification_answer,
+    resolve_semantic_intent,
+    METRIC_RULES,
+)
 
 load_dotenv()
-
 
 groq_client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-gemini_client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
-
+try:
+    gemini_client = genai.Client(
+        api_key=os.getenv("GEMINI_API_KEY")
+    )
+except Exception:
+    gemini_client = None
 
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
-
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 
 def clean_sql(sql):
-
-    sql = sql.strip()
-
+    sql = (sql or "").strip()
     if sql.startswith("```"):
         sql = (
             sql
@@ -41,499 +45,45 @@ def clean_sql(sql):
             .replace("```", "")
             .strip()
         )
-
+    # Strip any leading 'sql\n'
+    if sql.lower().startswith("sql\n"):
+        sql = sql[4:].strip()
     return sql
 
-
-# --------------------------------------------------
-# Clarification Check
-# --------------------------------------------------
-
-def check_clarification(question, conversation_history=None):
-
-    schema = get_schema()
-
-    if conversation_history:
-        conversation = "\n".join(conversation_history)
-    else:
-        conversation = "no previous conversation"
-
-    prompt = f"""
-You are the Query Confidence and Clarification Engine of a Text-to-SQL system.
-
-Your main goal is to prevent confidently wrong SQL queries.
-
-Database schema:
-{schema}
-
-Previous conversation:
-{conversation}
-
-Current user question:
-{question}
-
-You must decide whether the question can be converted into a correct SQL query
-WITHOUT making an assumption that could change the meaning of the result.
-
-Return ONLY one of these:
-CLEAR
-CLARIFY
-UNKNOWN
-
-CLEAR
-
-Return CLEAR when the user's intent is sufficiently clear.
-
-Do NOT ask for clarification just because:
-- The wording is informal.
-- The user uses Hindi, Hinglish, Gujarati, French, or another language.
-- The question is short.
-- The user uses synonyms or natural language.
-- The user does not mention the exact database column name.
-- A reasonable SQL interpretation is obvious from the database schema.
-- A ranking/filtering operation has an obvious meaning from the available schema.
-
-Examples:
-
-"show me customers from Germany"
-→ CLEAR
-
-"give me the 10 most expensive products"
-→ CLEAR
-
-"show products costing more than 20"
-→ CLEAR
-
-"how many customers are there?"
-→ CLEAR
-
-"show orders from 1997"
-→ CLEAR
-
-"show me all order details"
-→ CLEAR
-
-CLARIFY
-
-Return CLARIFY ONLY when there are multiple reasonable interpretations
-and choosing one would require guessing the user's intention.
-
-Examples:
-
-"show me 10 best customers"
-→ CLARIFY
-
-Because "best" could reasonably mean:
-- highest total spending
-- most orders
-- highest quantity purchased
-
-Another example:
-
-"show me the most popular products"
-→ CLARIFY
-
-if popularity could reasonably mean different measurable things
-in the available database.
-
-Important:
-Do NOT decide the clarification options here.
-Only decide whether clarification is required.
-
-UNKNOWN
-
-Return UNKNOWN when the user's request cannot reasonably be answered
-using the available database schema.
-
-Examples:
-
-"show me employee salaries"
-when salary information does not exist.
-
-"what is today's weather?"
-when weather data does not exist.
-
-IMPORTANT RULES
-
-1. Never guess when the ambiguity could change the result.
-
-2. Do not over-clarify.
-If a reasonable and unambiguous interpretation exists, return CLEAR.
-
-3. Use the database schema to understand what information is actually available.
-
-4. Use previous conversation context.
-A question that looks ambiguous by itself may be clear from previous messages.
-
-5. If the user has already specified a metric or condition in the conversation,
-do not ask for it again.
-
-6. Do not generate SQL.
-
-7. Do not generate a clarification message.
-
-8. Return ONLY:
-CLEAR
-CLARIFY
-or
-UNKNOWN
-"""
-
-    # 1. OpenRouter
-    try:
-
-        url = "https://openrouter.ai/api/v1/chat/completions"
-
-        response = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openrouter/free",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        result = (
-            data["choices"][0]["message"]["content"]
-            .strip()
-            .upper()
-        )
-
-        print("Clarification Engine: OpenRouter")
-
-        if result in ["CLEAR", "CLARIFY", "UNKNOWN"]:
-            return result
-
-        return "CLEAR"
-
-    except Exception as openrouter_error:
-
-        print(
-            "Clarification OpenRouter failed:",
-            openrouter_error
-        )
-
-
-    # 2. Groq fallback
-    try:
-
-        response = groq_client.chat.completions.create(
-            model="qwen/qwen3.8-27b",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        )
-
-        result = (
-            response.choices[0]
-            .message.content
-            .strip()
-            .upper()
-        )
-
-        print("Clarification Engine: Groq")
-
-        if result in ["CLEAR", "CLARIFY", "UNKNOWN"]:
-            return result
-
-        return "CLEAR"
-
-    except Exception as groq_error:
-
-        print(
-            "Clarification Groq failed:",
-            groq_error
-        )
-
-    return "CLEAR"
-
-
-# --------------------------------------------------
-# Generate Clarification
-# --------------------------------------------------
-
-def generate_clarification(
-    question,
-    conversation_history=None
-):
-
-    schema = get_schema()
-
-    if conversation_history:
-        conversation = "\n".join(conversation_history)
-    else:
-        conversation = "no previous conversation"
-
-    prompt = f"""
-You are a clarification assistant for a Text-to-SQL chatbot.
-
-Database schema:
-{schema}
-
-Previous conversation:
-{conversation}
-
-User question:
-{question}
-
-The question is ambiguous.
-
-Generate a short clarification question and 2 to 4 useful options.
-
-Rules:
-
-- Options must be based on the actual database schema.
-- Options must be relevant to the user's question.
-- Do not use the same options for every question.
-- Infer the relevant entity from the user's question.
-- For customers, use customer-related measurable metrics.
-- For products, use product-related measurable metrics.
-- For orders, use order-related measurable metrics.
-- For employees, use employee-related measurable metrics.
-- Use only metrics that can actually be calculated from the database.
-- Do not invent database columns or information.
-- Do not generate SQL.
-- Do not answer the original question.
-- Respond in the same language/style as the user.
-- If the user uses Hinglish, use natural Hinglish.
-- If the user uses Gujarati, use Gujarati.
-- If the user uses English, use English.
-- Keep the clarification short and conversational.
-- For top N or highest/lowest items within each group, use ROW_NUMBER() or RANK() with PARTITION BY inside a subquery or CTE, then filter the rank in the outer query.
-- For per-group top N queries, do not rely only on ORDER BY; explicitly rank/filter within each group.
-- For top N items within each group, use ROW_NUMBER() or RANK() with PARTITION BY inside a subquery or CTE, then filter the rank in the outer query.
-- SQLite does not support QUALIFY; never use QUALIFY.
-- Return only the final SQL query. Never include reasoning, comments, explanations, or alternative queries.
-
-Return ONLY valid JSON.
-
-Use exactly this structure:
-
-{{
-    "question": "your clarification question",
-    "options": [
-        "option 1",
-        "option 2",
-        "option 3"
-    ]
-}}
-"""
-
-    try:
-
-        url = "https://openrouter.ai/api/v1/chat/completions"
-
-        response = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openrouter/free",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        result = (
-            data["choices"][0]["message"]["content"]
-            .strip()
-        )
-
-        # Remove Markdown JSON fences if model adds them
-        if result.startswith("```"):
-
-            result = (
-                result
-                .replace("```json", "")
-                .replace("```", "")
-                .strip()
-            )
-
-        clarification = json.loads(result)
-
-        # Basic validation
-        if not isinstance(clarification, dict):
-            raise ValueError(
-                "Invalid clarification format"
-            )
-
-        if "question" not in clarification:
-            raise ValueError(
-                "Clarification question missing"
-            )
-
-        if "options" not in clarification:
-            raise ValueError(
-                "Clarification options missing"
-            )
-
-        if not isinstance(
-            clarification["options"],
-            list
-        ):
-            raise ValueError(
-                "Clarification options must be a list"
-            )
-
-        if len(clarification["options"]) < 2:
-            raise ValueError(
-                "At least two clarification options required"
-            )
-
-        print(
-            "Clarification Generator: OpenRouter"
-        )
-
-        return clarification
-
-    except Exception as error:
-
-        print(
-            "Clarification Generator failed:",
-            error
-        )
-
-        return {
-            "question": "Could you please clarify what you mean?",
-            "options": [
-                "Show the available information",
-                "Choose a specific metric"
-            ]
-        }
-
-
-def needs_semantic_layer(question):
-
-    semantic_keywords = [
-        "revenue",
-        "sales",
-        "profit",
-        "discount",
-        "average",
-        "total",
-        "highest",
-        "lowest",
-        "best",
-        "worst",
-        "most",
-        "least",
-        "top",
-        "bottom",
-        "per",
-        "each",
-        "between",
-        "compare",
-        "growth",
-        "trend",
-        "monthly",
-        "yearly",
-        "category wise",
-        "country wise",
-        "customer wise",
-        "product wise"
-    ]
-
-    question_lower = question.lower()
-
-    # Direct keyword check
-    for keyword in semantic_keywords:
-        if keyword in question_lower:
-            return True
-
-    # Typo-aware semantic keyword detection
-    words = question_lower.split()
-
-    for word in words:
-
-        clean_word = word.strip(".,!?")
-
-        suggestion = suggest_keyword(clean_word)
-
-        if suggestion:
-            suggested_keyword = suggestion.get("keyword", "").lower()
-
-            if suggested_keyword in semantic_keywords:
-                return True
-
-    return False
-
-# --------------------------------------------------
-# Generate SQL
-# --------------------------------------------------
 
 def generate_sql(
     question,
     conversation_history=None
 ):
+    # 1. Deterministic safety & unknown check
+    intent = resolve_semantic_intent(question, conversation_history)
+    if intent["status"] == "unsafe":
+        return "UNSAFE_QUERY"
+    if intent["status"] == "unknown":
+        return "UNKNOWN_QUERY"
 
-    schema = get_schema()
-    semantic_context = None
+    # 2. Context & schema
+    semantic_context = get_sql_generator_context(question)
 
-    if needs_semantic_layer(question):
-        semantic_context = get_sql_generator_context(question)
+    # 3. Typo correction for high-confidence matches
     words = question.split()
-
     corrected_question = question
 
     for word in words:
-
         clean_word = word.strip(".,!?")
-
-        suggestion = suggest_keyword(
-            clean_word
-        )
-
-        if (
-            suggestion
-            and suggestion["type"] == "direct"
-        ):
-
-            corrected_question = (
-                corrected_question.replace(
-                    clean_word,
-                    suggestion["keyword"]
-                )
+        suggestion = suggest_keyword(clean_word)
+        if suggestion and suggestion["type"] == "direct":
+            corrected_question = corrected_question.replace(
+                clean_word,
+                suggestion["keyword"]
             )
 
-    database_keywords = get_database_keywords()
-
     if conversation_history:
-
-        conversation = "\n".join(
-            conversation_history
-        )
-
+        conversation = "\n".join(conversation_history)
     else:
-
         conversation = "no previous conversation"
 
-    prompt = f"""
-You are a Text-to-SQL assistant for a Northwind SQLite database.
+    prompt = f"""You are a Text-to-SQL assistant for a Northwind SQLite database.
 
 Semantic context:
 {json.dumps(semantic_context, separators=(",", ":"), ensure_ascii=False)}
@@ -547,29 +97,28 @@ User question:
 Rules:
 - Return only one valid SQLite SELECT query.
 - Return no Markdown, explanation, or code fences.
-- For INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, or other data/schema changes, return exactly UNSAFE_QUERY.
-- If the request cannot be matched to the supplied schema/semantic context, return exactly UNKNOWN_QUERY.
+- For data modifications (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE) or malicious requests, return exactly UNSAFE_QUERY.
+- If the question asks for information not in the database (e.g. employee salaries, reviews, weather), return exactly UNKNOWN_QUERY.
 - Never invent tables, columns, relationships, or metrics.
-- Follow semantic metric definitions exactly; never simplify or replace them.
-- Use declared relationships for joins.
-- Use DISTINCT when required by a metric.
-- Avoid duplicating order-level values after line-item joins.
-- - Always use double quotes for SQLite identifiers that contain spaces or special characters. Never use backticks (`) for identifiers. For example, use "Order Details", not `Order Details`.
-- Use case-insensitive text matching when appropriate.
+- Always use double quotes for SQLite table or column names with spaces: specifically, use "Order Details", NEVER Order Details.
+- Historical Revenue MUST be: SUM("Order Details"."UnitPrice" * "Order Details"."Quantity" * (1 - "Order Details"."Discount")).
+  Never use Products.UnitPrice for historical revenue calculations.
+- Gross Sales: SUM("Order Details"."UnitPrice" * "Order Details"."Quantity").
+- Quantity Sold: SUM("Order Details"."Quantity").
+- Order Count: COUNT(DISTINCT Orders.OrderID).
+- Most expensive products: Products.UnitPrice DESC.
+- Most sold products: SUM("Order Details".Quantity) DESC.
+- Out of stock products: Products.UnitsInStock = 0. Never use Discontinued for out of stock questions.
 - Understand English, Hindi, Hinglish, and Gujarati.
-- Preserve filters, grouping, sorting, LIMIT, and relevant previous context.
-- Resolve follow-up references such as it, they, those, unke, unki, unka, isme from previous conversation.
-- For top N items within each group, first calculate the aggregate value for each item, then rank items using ROW_NUMBER() or RANK() OVER (PARTITION BY group_column ORDER BY aggregate_value DESC), and filter the rank in an outer query.
-- For per-group top N queries, never use a final/global LIMIT N because it limits the entire result instead of each group.
-- SQLite does not support QUALIFY. Use a subquery or CTE with ROW_NUMBER() or RANK(), then filter the rank in the outer SELECT.
-- When a table is assigned an alias, use only that alias for every reference to that table throughout the query.
-- Never reference the original table name after assigning an alias.
-- For "above/below average per group" queries, first calculate the requested metric at the individual entity level, then calculate the group's average of those entity-level metrics using AVG(metric) OVER (PARTITION BY group_column). Never apply AVG() directly to the group/category column or raw joined rows.
-- Before returning SQL, verify that every column reference uses the correct table name or its assigned alias.
+- Preserve filters, grouping, sorting direction (DESC or ASC), LIMIT N, and relevant previous conversation context.
+- When an alias is given to a table, use only that alias for all references to that table.
+- Verify every column reference matches the schema before returning the SQL.
 """
-    # 2. Groq
-    try:
 
+    # --------------------------------------------------
+    # 1. Groq
+    # --------------------------------------------------
+    try:
         response = groq_client.chat.completions.create(
             model="qwen/qwen3.8-27b",
             messages=[
@@ -577,129 +126,101 @@ Rules:
                     "role": "user",
                     "content": prompt
                 }
-            ]
-        )
-        print("\n===== GROQ INPUT =====")
-        print(prompt)
-        print("===== GROQ INPUT END =====")
-        print("Prompt characters:", len(prompt))
-
-        sql = clean_sql(
-            response.choices[0]
-            .message.content
+            ],
+            temperature=0,
         )
 
-        print("Using: Groq")
-        print(
-            "Groq SQL:",
-            repr(sql)
-        )
-
+        sql = clean_sql(response.choices[0].message.content)
         return sql
 
     except Exception as groq_error:
+        print("Groq failed:", groq_error)
 
-        print(
-            "Groq failed:",
-            groq_error
-        )
+    # --------------------------------------------------
+    # 2. Cloudflare
+    # --------------------------------------------------
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+        try:
+            url = (
+                f"https://api.cloudflare.com/client/v4/accounts/"
+                f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/"
+                f"@cf/qwen/qwen3-30b-a3b-fp8"
+            )
 
+            response = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                },
+                timeout=20,
+            )
 
-    # 3. Cloudflare
-    try:
+            response.raise_for_status()
+            data = response.json()
+            result = data.get("result", {})
 
-        url = (
-            f"https://api.cloudflare.com/client/v4/accounts/"
-            f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/"
-            f"@cf/qwen/qwen3-30b-a3b-fp8"
-        )
+            if "response" in result:
+                sql = clean_sql(result["response"])
+                return sql
+            else:
+                raise Exception(f"Unexpected Cloudflare response: {data}")
 
-        response = requests.post(
-            url,
-            headers={
-                "Authorization":
-                    f"Bearer {CLOUDFLARE_API_TOKEN}",
-                "Content-Type":
-                    "application/json"
-            },
-            json={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-        )
+        except Exception as cloudflare_error:
+            print("Cloudflare failed:", cloudflare_error)
 
-        response.raise_for_status()
+    # --------------------------------------------------
+    # 3. OpenRouter
+    # --------------------------------------------------
+    if OPENROUTER_API_KEY:
+        try:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            response = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "openrouter/free",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                },
+                timeout=25,
+            )
 
-        data = response.json()
-        result = data.get("result", {})
+            response.raise_for_status()
+            data = response.json()
+            sql = clean_sql(data["choices"][0]["message"]["content"])
+            return sql
 
-        if "response" in result:
-            sql = clean_sql(result["response"])
-        else:
-            raise Exception(f"Unexpected Cloudflare response: {data}")
+        except Exception as openrouter_error:
+            print("OpenRouter failed:", openrouter_error)
 
-        print("Using: Cloudflare")
-        print("Cloudflare SQL:", repr(sql))
+    # --------------------------------------------------
+    # 4. Gemini Fallback
+    # --------------------------------------------------
+    if gemini_client:
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            sql = clean_sql(response.text)
+            return sql
+        except Exception as gemini_error:
+            print("Gemini failed:", gemini_error)
 
-        return sql
-
-    except Exception as cloudflare_error:
-
-        print(
-            "Cloudflare failed:",
-            cloudflare_error
-        )
-
-
-    # 4. OpenRouter
-    try:
-
-        url = (
-            "https://openrouter.ai/api/v1/chat/completions"
-        )
-
-        response = requests.post(
-            url,
-            headers={
-                "Authorization":
-                    f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type":
-                    "application/json"
-            },
-            json={
-                "model": "openrouter/free",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        sql = clean_sql(
-            data["choices"][0]["message"]["content"]
-        )
-
-        print("Using: OpenRouter")
-
-        return sql
-
-    except Exception as openrouter_error:
-
-        print(
-            "OpenRouter failed:",
-            openrouter_error
-        )
-
-    raise Exception(
-        "All AI providers failed."
-    )
+    raise Exception("All AI providers failed.")

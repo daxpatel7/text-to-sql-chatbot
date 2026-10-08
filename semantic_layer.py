@@ -7,8 +7,11 @@ get_sql_generator_context(question).
 
 from dataclasses import dataclass, field
 from typing import Optional
+from functools import lru_cache
 import json
 import os
+import re
+import difflib
 import sqlite3
 from pathlib import Path
 
@@ -244,17 +247,6 @@ METRICS = {
         "source": "Order Details",
         "synonyms": ["units sold", "items sold", "quantity sold", "sales quantity", "most sold"],
     },
-    "Average Customer Revenue": {
-    "definition": "AVG(customer-level Revenue)",
-    "aggregation": "AVG",
-    "meaning": "Average of each customer's total discounted revenue.",
-    "source": "Customers + Orders + Order Details",
-    "synonyms": [
-        "average customer revenue",
-        "average revenue per customer",
-        "customer average revenue"
-    ],
-    },
     "Average Order Value": {
         "definition": 'SUM("Order Details"."UnitPrice" * "Order Details"."Quantity" * (1 - "Order Details"."Discount")) / COUNT(DISTINCT "Orders"."OrderID")',
         "aggregation": "RATIO",
@@ -368,6 +360,139 @@ METRICS = {
         "synonyms": ["average price", "mean product price"],
     },
 }
+# ---------------------------------------------------------------------------
+# 4A. CANONICAL METRIC TO UI DISPLAY MAPPING
+# ---------------------------------------------------------------------------
+
+CANONICAL_TO_DISPLAY = {
+    "Revenue": "Revenue",
+    "Order Count": "Orders",
+    "Quantity Sold": "Quantity",
+    "Product Count": "Products",
+    "Average Product Price": "Average Product Price",
+    "Freight Cost": "Freight Cost",
+    "Discount Amount": "Discount Amount",
+    "Customer Count": "Customers",
+    "Employee Count": "Employees",
+    "Supplier Count": "Suppliers",
+    "Category Count": "Categories",
+    "Shipper Count": "Shippers",
+    "Territory Count": "Territories",
+    "Region Count": "Regions",
+}
+
+DISPLAY_TO_CANONICAL = {v.lower(): k for k, v in CANONICAL_TO_DISPLAY.items()}
+
+# ---------------------------------------------------------------------------
+# 4B. CLARIFICATION METRIC RULES (SOURCE OF TRUTH)
+# ---------------------------------------------------------------------------
+
+METRIC_RULES = {
+    "Customers": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest", "lowest", "most valuable", "most active", "most loyal",
+            "valuable", "active", "loyal",
+            "achha", "acha", "achhi", "acche", "badiya", "sabse achha", "sabse acha", "sabse achhi", "sabse acche",
+            "bura", "buri", "sabse bura", "sabse buri", "kharab", "sabse kharab",
+            "saras", "sauthi saras", "sauthi kharab",
+            "સૌથી સરસ", "સરસ", "સૌથી ખરાબ", "ખરાબ",
+            "सबसे अच्छा", "सबसे अच्छे", "अच्छा", "अच्छे", "सबसे खराब", "खराब", "उत्तम", "श्रेष्ठ",
+        ],
+        "metrics": [
+            "Revenue",
+            "Order Count",
+            "Quantity Sold",
+        ],
+    },
+    "Products": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest", "lowest", "popular", "valuable", "most popular", "most valuable",
+            "leading", "performing",
+            "achha", "acha", "achhi", "acche", "sabse achha", "sabse acha", "sabse acche",
+            "bura", "buri", "sabse bura", "kharab", "sabse kharab",
+            "mashhoor", "mashhur", "sabse popular", "lokpriya", "lokpriy", "sabse lokpriya",
+            "saras", "sauthi saras", "sauthi popular", "sauthi lokpriya", "sauthi kharab",
+            "સૌથી લોકપ્રિય", "લોકપ્રિય", "સૌથી સરસ", "સરસ", "સૌથી ખરાબ", "ખરાબ",
+            "सबसे अच्छा", "सबसे अच्छे", "अच्छा", "सबसे लोकप्रिय", "लोकप्रिय", "मशहूर", "सबसे खराब", "खराब",
+        ],
+        "metrics": [
+            "Revenue",
+            "Quantity Sold",
+            "Order Count",
+            "Average Product Price",
+        ],
+    },
+    "Employees": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest", "lowest", "most productive", "productive", "most active", "active",
+            "leading", "performing",
+            "achha", "acha", "achhi", "acche", "sabse achha", "sabse acha", "sabse acche",
+            "bura", "sabse bura", "sabse productive", "kabil", "sabse kabil",
+            "saras", "sauthi saras", "sauthi productive",
+            "સૌથી સરસ", "સરસ", "સૌથી ઉત્પાદક", "ઉત્પાદક",
+            "सबसे अच्छा", "सबसे अच्छे", "अच्छा", "सबसे कर्मठ", "कर्मठ", "सक्षम",
+        ],
+        "metrics": [
+            "Revenue",
+            "Order Count",
+            "Quantity Sold",
+        ],
+    },
+    "Categories": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest", "lowest", "popular", "most popular",
+            "leading", "performing",
+            "achha", "acha", "achhi", "acche", "sabse achha", "sabse acha",
+            "bura", "sabse bura", "kharab", "sabse kharab",
+            "mashhoor", "mashhur", "sabse popular", "lokpriya", "lokpriy", "sabse lokpriya",
+            "saras", "sauthi saras", "sauthi popular", "sauthi lokpriya",
+            "સૌથી લોકપ્રિય", "લોકપ્રિય", "સૌથી સરસ", "સરસ",
+            "सबसे अच्छा", "सबसे अच्छे", "सबसे लोकप्रिय", "लोकप्रिय", "मशहूर",
+        ],
+        "metrics": [
+            "Revenue",
+            "Quantity Sold",
+            "Order Count",
+        ],
+    },
+    "Suppliers": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest", "lowest", "productive", "most productive",
+            "leading", "performing",
+            "achha", "acha", "sabse achha", "sabse acha", "sabse productive",
+            "bura", "sabse bura", "kharab", "sabse kharab",
+            "saras", "sauthi saras", "sauthi productive",
+            "સૌથી સરસ", "સરસ", "સૌથી ઉત્પાદક",
+            "सबसे अच्छा", "सबसे अच्छे", "सबसे कर्मठ",
+        ],
+        "metrics": [
+            "Revenue",
+            "Quantity Sold",
+            "Product Count",
+        ],
+    },
+    "Orders": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest", "largest", "most expensive", "recent",
+            "bada", "sabse bada", "badi", "sabse badi", "mota", "sauthi mota",
+        ],
+        "metrics": [
+            "Revenue",
+            "Quantity Sold",
+            "Freight Cost",
+        ],
+    },
+    "Order Details": {
+        "ambiguous_words": [
+            "best", "worst", "top", "highest",
+        ],
+        "metrics": [
+            "Revenue",
+            "Quantity Sold",
+            "Discount Amount",
+        ],
+    },
+}
 
 # ---------------------------------------------------------------------------
 # 5. AGGREGATIONS / BUSINESS RULES / SYNONYMS
@@ -391,22 +516,129 @@ AGGREGATIONS = {
     "bottom": "ORDER ASC + LIMIT",
 }
 
-SYNONYMS = {
-    "customer": ["customers", "client", "clients", "buyer", "buyers", "company", "companies"],
-    "product": ["products", "item", "items", "goods"],
-    "order": ["orders", "purchase", "purchases", "sales order"],
-    "order detail": ["order details", "order line", "order lines", "line item", "line items"],
-    "employee": ["employees", "staff", "worker", "workers", "sales person", "salesperson", "representative"],
-    "supplier": ["suppliers", "vendor", "vendors"],
-    "category": ["categories", "product category", "product categories", "type of product"],
-    "shipper": ["shippers", "carrier", "carriers", "shipping company", "shipping companies"],
-    "territory": ["territories", "sales territory", "sales territories", "area"],
-    "region": ["regions", "area", "geographic region"],
-    "revenue": ["sales", "net sales", "sales revenue", "turnover"],
-    "quantity": ["qty", "units", "amount of items", "number of units"],
-    "price": ["unit price", "cost", "selling price"],
-    "country": ["nation"],
-    "city": ["town"],
+ENTITY_SYNONYMS = {
+    "Customers": [
+        "customer", "customers", "client", "clients", "buyer", "buyers",
+        "customer company", "customer companies",
+        "grahak", "grahako", "khedut", "kheduto", "ग्राहक", "ग्राहकों", "ગ્રાહક", "ગ્રાહકો",
+    ],
+    "Products": [
+        "product", "products", "item", "items", "goods", "merchandise",
+        "utpadan", "utpadano", "vastu", "vastuo", "cheej", "cheeje", "maal",
+        "उत्पाद", "उत्पादों", "वस्तु", "ચીજ", "વસ્તુઓ", "ઉત્પાદન", "ઉત્પાદનો",
+    ],
+    "Employees": [
+        "employee", "employees", "staff", "worker", "workers",
+        "salesperson", "sales person", "salespersons", "representative", "representatives",
+        "karmchari", "karmachari", "karmchario", "karmachariyo",
+        "कर्मचारी", "कर्मचारियों", "કર્મચારી", "કર્મચારીઓ",
+    ],
+    "Categories": [
+        "category", "categories", "product category", "product categories", "type of product",
+        "shreni", "shreniyo", "varg", "vargo", "श्रेणी", "श्रेणियां", "શ્રેણી", "શ્રેણીઓ",
+    ],
+    "Suppliers": [
+        "supplier", "suppliers", "vendor", "vendors",
+        "vyapari", "vyapariyo", "purvatha", "purvathadar",
+        "व्यापारी", "व्यापारियों", "આપનાર", "વેપારી", "વેપારીઓ",
+    ],
+    "Order Details": [
+        "order detail", "order details", "order line", "order lines",
+        "line item", "line items", "order detail record", "order detail records",
+    ],
+    "Orders": [
+        "order", "orders", "purchase", "purchases", "sales order", "sales orders",
+        "kharid", "kharidi", "kharidari", "ऑर्डर", "खरीद", "ખરીદી", "ઓર્ડર",
+    ],
+    "Shippers": [
+        "shipper", "shippers", "carrier", "carriers", "shipping company", "shipping companies",
+    ],
+    "Territories": [
+        "territory", "territories", "sales territory", "sales territories", "area", "areas",
+    ],
+    "Regions": [
+        "region", "regions", "geographic region", "geographic regions", "zone", "zones",
+    ],
+    "CustomerDemographics": [
+        "customer demographic", "customer demographics", "customer type", "customer types",
+    ],
+}
+
+SYNONYMS = {k.lower(): v for k, v in ENTITY_SYNONYMS.items()}
+
+METRIC_SYNONYMS = {
+    "Revenue": [
+        "revenue", "sales", "sales revenue", "net sales", "turnover", "income from sales",
+        "sales amount", "sales value", "total sales", "total sales amount",
+        "money generated", "money made", "earnings", "income generated",
+        "kamai", "bikri", "aavak", "aavako", "આવક", "बिक्री", "कमाई",
+    ],
+    "Gross Sales": [
+        "gross sales", "gross revenue", "gross sales value", "sales before discount",
+    ],
+    "Discount Amount": [
+        "discount amount", "discount value", "discount total", "total discount",
+        "discount", "chhoot", "chut", "छूट",
+    ],
+    "Order Count": [
+        "order count", "number of orders", "total orders", "orders count",
+        "count of orders", "kitne orders", "ketla orders",
+    ],
+    "Order Line Count": [
+        "order line count", "line count", "order detail count", "records in order details",
+        "number of records in order details", "records are in order details",
+    ],
+    "Quantity Sold": [
+        "quantity sold", "units sold", "items sold", "sales quantity",
+        "most sold", "units", "quantity", "qty",
+        "sabse zyada bike", "sabse zyada bika", "vadhu vechayel",
+    ],
+    "Average Order Value": [
+        "average order value", "aov", "average order size", "average sales per order",
+    ],
+    "Average Selling Price": [
+        "average selling price", "average sold price", "average transaction price",
+    ],
+    "Average Discount": [
+        "average discount", "average discount rate",
+    ],
+    "Freight Cost": [
+        "freight cost", "freight charges", "freight", "shipping cost", "shipping charges",
+    ],
+    "Average Freight": [
+        "average freight", "average shipping cost",
+    ],
+    "Product Count": [
+        "product count", "number of products", "products count", "total products",
+    ],
+    "Customer Count": [
+        "customer count", "number of customers", "customers count", "total customers",
+    ],
+    "Employee Count": [
+        "employee count", "number of employees", "staff count", "total employees",
+    ],
+    "Supplier Count": [
+        "supplier count", "number of suppliers", "total suppliers",
+    ],
+    "Category Count": [
+        "category count", "number of categories", "total categories",
+    ],
+    "Shipper Count": [
+        "shipper count", "number of shippers", "carrier count",
+    ],
+    "Territory Count": [
+        "territory count", "number of territories",
+    ],
+    "Region Count": [
+        "region count", "number of regions",
+    ],
+    "Products In Stock": [
+        "products in stock", "units in stock", "available stock", "inventory",
+    ],
+    "Average Product Price": [
+        "average product price", "average price", "mean product price",
+        "products ki average price", "average price of products",
+    ],
 }
 
 BUSINESS_RULES = [
@@ -425,16 +657,15 @@ BUSINESS_RULES = [
     "OrderDate is used for when an order was placed; RequiredDate is the requested deadline; ShippedDate is the shipment date.",
     "Employee hierarchy uses Employees.ReportsTo -> Employees.EmployeeID.",
     "Discontinued is stored as TEXT in this SQLite database; default value is '0'.",
+    "Out of stock means Products.UnitsInStock = 0. Do not use Discontinued unless the user explicitly asks for discontinued products.",
     "When a table or column name contains spaces or special characters, quote it with double quotes, e.g. \"Order Details\".",
     "For 'most sold' products, use Quantity Sold unless the user explicitly asks for revenue or another metric.",
     "For 'most expensive products', use Products.UnitPrice unless the user explicitly asks for historical selling price.",
     "For 'best customers', do not assume a metric. If no metric is specified, the intent is ambiguous and should be clarified.",
     "For 'best customers by revenue', group at customer level and use discounted Revenue.",
-    "Average customer revenue means the average of customer-level total Revenue. First calculate total discounted Revenue for each customer, then take AVG of those customer totals. Do not calculate it as total Revenue / customer count or Revenue / order count.",
     "For 'best customers by orders', group at customer level and use distinct Order Count.",
     "For top/bottom N requests, preserve the requested N as LIMIT and sort the selected metric in the requested direction.",
     "Do not invent tables, columns, metrics or relationships that are not present in this semantic layer.",
-    "Out of stock means Products.UnitsInStock = 0. Do not include Discontinued products unless the user explicitly asks for discontinued products.",
 ]
 
 
@@ -442,8 +673,9 @@ def connect():
     return sqlite3.connect(str(DATABASE_PATH))
 
 
+@lru_cache(maxsize=1)
 def get_database_metadata():
-    """Return the actual current SQLite schema, including types, PKs and FKs."""
+    """Return the actual current SQLite schema, cached."""
     with connect() as db:
         tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
         metadata = {}
@@ -528,752 +760,581 @@ def get_semantic_context(question=None):
         context["user_question"] = question
     return context
 
-def get_compact_semantic_context(question=None):
-    """
-    Return a compact semantic context containing only information
-    that is useful for the current SQL question.
-    """
 
-    context = get_semantic_context(question)
+# ---------------------------------------------------------------------------
+# 6. TEXT PROCESSING & SAFETY HELPERS
+# ---------------------------------------------------------------------------
 
-    if not question:
-        return context
+PUNCT_RE = re.compile(r"""[.,;:?!\"'(){}\[\]/\\`~@#$%^&*+=<>|_]""")
 
-    question_lower = question.lower()
 
-    # ---------------------------------------------------------
-    # 1. Detect tables/entities mentioned in the question
-    # ---------------------------------------------------------
-    table_keywords = {
-        "customer": "Customers",
-        "customers": "Customers",
-        "client": "Customers",
-        "clients": "Customers",
-        "buyer": "Customers",
-        "buyers": "Customers",
+def _normalize_semantic_text(text):
+    """Normalize wording without destroying non-ASCII Unicode letters and combining marks."""
+    text = (text or "").lower().strip()
+    text = text.replace("’", "'").replace("‘", "'")
+    text = PUNCT_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
-        "product": "Products",
-        "products": "Products",
-        "item": "Products",
-        "items": "Products",
 
-        "order": "Orders",
-        "orders": "Orders",
-        "purchase": "Orders",
-        "purchases": "Orders",
+def _phrase_in_text(text, phrase):
+    """Word-boundary phrase match; avoids substring false positives."""
+    return re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", text, flags=re.UNICODE) is not None
 
-        "employee": "Employees",
-        "employees": "Employees",
-        "staff": "Employees",
 
-        "supplier": "Suppliers",
-        "suppliers": "Suppliers",
-        "vendor": "Suppliers",
-        "vendors": "Suppliers",
+def _is_unsafe(text):
+    """Detect queries attempting database modifications or injection."""
+    q = _normalize_semantic_text(text)
+    patterns = [
+        r"\b(?:drop\s+table|delete\s+from|truncate\s+table|alter\s+table|insert\s+into)\b",
+        r"\b(?:delete|drop|update|insert|alter|truncate)\s+(?:all\s+)?(?:customers?|orders?|products?|employees?|suppliers?|categories?)\b",
+        r"\bdelete\s+everything\b",
+        r"\bdrop\s+all\b",
+        r"\bupdate\s+\w+\s+set\b",
+        r"\bupdate\s+all\s+\w+\s+prices\b",
+        r"\bignore\s+previous\s+instructions\b",
+        r";\s*drop\s+table\b",
+        r";\s*delete\s+from\b",
+    ]
+    return any(re.search(p, q, flags=re.UNICODE) for p in patterns)
 
-        "category": "Categories",
-        "categories": "Categories",
 
-        "shipper": "Shippers",
-        "shippers": "Shippers",
-        "carrier": "Shippers",
+def _is_unknown(text):
+    """Detect queries asking for concepts that do not exist in the Northwind DB."""
+    q = _normalize_semantic_text(text)
+    unknown_patterns = [
+        r"\b(?:salary|salaries|pay|wages?)\b",
+        r"\b(?:product\s+reviews?|reviews?|ratings?)\b",
+        r"\b(?:today'?s\s+weather|weather|temperature)\b",
+        r"\b(?:password|passwords|auth\s+token)\b",
+    ]
+    return any(re.search(p, q, flags=re.UNICODE) for p in unknown_patterns)
 
-        "territory": "Territories",
-        "territories": "Territories",
 
-        "region": "Regions",
-        "regions": "Regions",
-    }
+# ---------------------------------------------------------------------------
+# 7. ENTITY & METRIC RESOLUTION
+# ---------------------------------------------------------------------------
 
-    relevant_tables = set()
+def _resolve_entities(question):
+    """Resolve database entities using multilingual synonym mapping."""
+    q = _normalize_semantic_text(question)
+    found = []
 
-    for keyword, table_name in table_keywords.items():
-        if keyword in question_lower:
-            relevant_tables.add(table_name)
+    # Check Order Details before Orders so "order details" isn't shadowed by "orders"
+    priority_order = [
+        "Order Details", "Customers", "Products", "Employees", "Categories",
+        "Suppliers", "Orders", "Shippers", "Territories", "Regions", "CustomerDemographics"
+    ]
 
-    # ---------------------------------------------------------
-    # 2. Detect requested metrics
-    # ---------------------------------------------------------
-    metric_keywords = {
-        "revenue": "Revenue",
-        "sales revenue": "Revenue",
-        "net sales": "Revenue",
+    for entity in priority_order:
+        aliases = sorted(ENTITY_SYNONYMS.get(entity, []), key=lambda a: -len(a))
+        for alias in aliases:
+            alias_n = _normalize_semantic_text(alias)
+            if alias_n and _phrase_in_text(q, alias_n):
+                if entity not in found:
+                    found.append(entity)
+                break
 
-        "gross sales": "Gross Sales",
-
-        "discount": "Discount Amount",
-
-        "quantity sold": "Quantity Sold",
-        "units sold": "Quantity Sold",
-        "items sold": "Quantity Sold",
-        "most sold": "Quantity Sold",
-
-        "average order": "Average Order Value",
-
-        "average selling price": "Average Selling Price",
-        "average sold price": "Average Selling Price",
-
-        "average discount": "Average Discount",
-
-        "freight": "Freight Cost",
-        "shipping cost": "Freight Cost",
-
-        "products": "Product Count",
-        "product count": "Product Count",
-        "number of products": "Product Count",
-
-        "customers": "Customer Count",
-        "customer count": "Customer Count",
-        "number of customers": "Customer Count",
-
-        "employees": "Employee Count",
-        "employee count": "Employee Count",
-
-        "suppliers": "Supplier Count",
-        "supplier count": "Supplier Count",
-
-        "categories": "Category Count",
-        "category count": "Category Count",
-
-        "shippers": "Shipper Count",
-        "shipper count": "Shipper Count",
-
-        "territories": "Territory Count",
-        "territory count": "Territory Count",
-
-        "regions": "Region Count",
-        "region count": "Region Count",
-
-        "in stock": "Products In Stock",
-        "inventory": "Products In Stock",
-
-        "on order": "Products On Order",
-
-        "average price": "Average Product Price",
-        "mean product price": "Average Product Price",
-    }
-
-    relevant_metrics = {}
-
-    for keyword, metric_name in metric_keywords.items():
-        if keyword in question_lower:
-            if metric_name in context["metrics"]:
-                relevant_metrics[metric_name] = context["metrics"][metric_name]
-
-    # ---------------------------------------------------------
-    # 3. Add source tables required by selected metrics
-    # ---------------------------------------------------------
-    for metric in relevant_metrics.values():
-        source = metric.get("source", "")
-
-        for table_name in context["tables"]:
-            if table_name.lower() in source.lower():
-                relevant_tables.add(table_name)
-
-    # Revenue/sales always needs order details.
-    # Orders is only needed when the query explicitly requires
-    # order-level information or an order-based metric.
-    if any(word in question_lower for word in [
-        "revenue",
-        "sales",
-        "gross sales",
-        "discount",
-        "quantity sold",
-        "units sold",
-        "average selling price",
-    ]):
-        relevant_tables.add("Order Details")
-
-    # ---------------------------------------------------------
-    # 4. Add only the shortest relationship paths needed
-    # ---------------------------------------------------------
-    path_tables = set(relevant_tables)
-
-    table_list = list(relevant_tables)
-
-    for i, start_table in enumerate(table_list):
-        for end_table in table_list[i + 1:]:
-            path = get_relationship_path(start_table, end_table)
-
-            if path:
-                path_tables.update(path)
-
-    relevant_tables = path_tables
-
-    # ---------------------------------------------------------
-    # 5. Safety fallback
-    # ---------------------------------------------------------
-    if not relevant_tables:
-        # Keep only a minimal schema instead of sending
-        # the entire semantic layer.
-        relevant_tables = {
-            "Customers",
-            "Products",
-            "Orders",
-            "Order Details"
-        }
-
-    # ---------------------------------------------------------
-    # 6. Build compact table information
-    # ---------------------------------------------------------
-    compact_tables = {}
-
-    for table_name in relevant_tables:
-
-        if table_name not in context["tables"]:
+    # Safe typo recovery for single words >= 5 chars
+    alias_to_table = {}
+    for table, aliases in ENTITY_SYNONYMS.items():
+        for alias in aliases:
+            alias_n = _normalize_semantic_text(alias)
+            if len(alias_n.split()) == 1 and len(alias_n) >= 5:
+                alias_to_table[alias_n] = table
+    for word in q.split():
+        if len(word) < 5:
             continue
-
-        table_info = context["tables"][table_name]
-
-        columns = []
-
-        for column in table_info["columns"]:
-
-            # Always keep primary keys.
-            keep = column["primary_key_position"] > 0
-
-            # Keep foreign-key columns.
-            for fk in table_info["foreign_keys"]:
-                if fk["from_column"] == column["name"]:
-                    keep = True
-
-            # Keep columns explicitly mentioned in the question.
-            if column["name"].lower() in question_lower:
-                keep = True
-
-            # Keep columns whose meaning contains a useful
-            # question keyword.
-            meaning = column.get("meaning", "").lower()
-
-            for word in question_lower.split():
-                if len(word) >= 4 and word in meaning:
-                    keep = True
-                    break
-
-            # Keep metric columns.
-            for metric in relevant_metrics.values():
-                definition = metric.get("definition", "")
-                if column["name"] in definition:
-                    keep = True
-
-            if keep:
-                columns.append({
-                    "name": column["name"],
-                    "type": column["data_type"],
-                    "meaning": column["meaning"]
-                })
-
-        compact_tables[table_name] = {
-            "meaning": table_info["meaning"],
-            "columns": columns,
-            "foreign_keys": [
-                {
-                    "from": fk["from_column"],
-                    "to_table": fk["to_table"],
-                    "to": fk["to_column"]
-                }
-                for fk in table_info["foreign_keys"]
-                if fk["to_table"] in relevant_tables
-            ]
-        }
-
-    # ---------------------------------------------------------
-    # 7. Keep only relationships between selected tables
-    # ---------------------------------------------------------
-    relevant_relationships = []
-
-    for relationship in context["relationships"]:
-
-        if (
-            relationship["from_table"] in relevant_tables
-            and relationship["to_table"] in relevant_tables
-        ):
-            relevant_relationships.append({
-                "from": (
-                    relationship["from_table"]
-                    + "."
-                    + relationship["from_column"]
-                ),
-                "to": (
-                    relationship["to_table"]
-                    + "."
-                    + relationship["to_column"]
-                )
-            })
-
-    # ---------------------------------------------------------
-    # 8. Keep only business rules needed for selected metrics
-    # ---------------------------------------------------------
-    relevant_business_rules = []
-
-    for rule in context["business_rules"]:
-
-        rule_lower = rule.lower()
-
-        keep_rule = False
-
-        # Metric-specific rules
-        for metric_name in relevant_metrics:
-            metric_word = metric_name.lower()
-
-            if metric_word in rule_lower:
-                keep_rule = True
-
-        # Important SQL/database rules
-        if "order details" in rule_lower and (
-            "revenue" in question_lower
-            or "sales" in question_lower
-            or "quantity" in question_lower
-            or "price" in question_lower
-            or "discount" in question_lower
-        ):
-            keep_rule = True
-
-        if "quote it with double quotes" in rule_lower:
-            keep_rule = True
-
-        if "spaces or special characters" in rule_lower:
-            keep_rule = True
-
-        if keep_rule and rule not in relevant_business_rules:
-            relevant_business_rules.append(rule)
-
-    # Always keep these two important rules when applicable.
-    if (
-        "revenue" in question_lower
-        or "sales" in question_lower
-    ):
-        for rule in context["business_rules"]:
-            if (
-                "historical transaction price" in rule.lower()
-                or "products.unitprice" in rule.lower()
-            ):
-                if rule not in relevant_business_rules:
-                    relevant_business_rules.append(rule)
-
-    # ---------------------------------------------------------
-    # 9. Return compact context
-    # ---------------------------------------------------------
-    return {
-        "database": {
-            "name": "Northwind SQLite",
-            "dialect": "SQLite"
-        },
-        "tables": compact_tables,
-        "relationships": relevant_relationships,
-        "metrics": relevant_metrics,
-        "business_rules": relevant_business_rules
-    }
-def get_compact_semantic_context(question=None):
-    """
-    Return a compact semantic context containing only information
-    that is useful for the current SQL question.
-    """
-
-    context = get_semantic_context(question)
-
-    if not question:
-        return context
-
-    question_lower = question.lower()
-
-    # ---------------------------------------------------------
-    # 1. Detect tables/entities mentioned in the question
-    # ---------------------------------------------------------
-    table_keywords = {
-        "customer": "Customers",
-        "customers": "Customers",
-        "client": "Customers",
-        "clients": "Customers",
-        "buyer": "Customers",
-        "buyers": "Customers",
-
-        "product": "Products",
-        "products": "Products",
-        "item": "Products",
-        "items": "Products",
-
-        "order": "Orders",
-        "orders": "Orders",
-        "purchase": "Orders",
-        "purchases": "Orders",
-
-        "employee": "Employees",
-        "employees": "Employees",
-        "staff": "Employees",
-
-        "supplier": "Suppliers",
-        "suppliers": "Suppliers",
-        "vendor": "Suppliers",
-        "vendors": "Suppliers",
-
-        "category": "Categories",
-        "categories": "Categories",
-
-        "shipper": "Shippers",
-        "shippers": "Shippers",
-        "carrier": "Shippers",
-
-        "territory": "Territories",
-        "territories": "Territories",
-
-        "region": "Regions",
-        "regions": "Regions",
-    }
-
-    relevant_tables = set()
-
-    for keyword, table_name in table_keywords.items():
-        if keyword in question_lower:
-            relevant_tables.add(table_name)
-
-    # ---------------------------------------------------------
-    # 2. Detect requested metrics
-    # ---------------------------------------------------------
-    metric_keywords = {
-        "revenue": "Revenue",
-        "sales revenue": "Revenue",
-        "net sales": "Revenue",
-
-        "gross sales": "Gross Sales",
-
-        "discount": "Discount Amount",
-
-        "quantity sold": "Quantity Sold",
-        "units sold": "Quantity Sold",
-        "items sold": "Quantity Sold",
-        "most sold": "Quantity Sold",
-
-        "average order": "Average Order Value",
-
-        "average selling price": "Average Selling Price",
-        "average sold price": "Average Selling Price",
-
-        "average discount": "Average Discount",
-
-        "freight": "Freight Cost",
-        "shipping cost": "Freight Cost",
-
-        "products": "Product Count",
-        "product count": "Product Count",
-        "number of products": "Product Count",
-
-        "customers": "Customer Count",
-        "customer count": "Customer Count",
-        "number of customers": "Customer Count",
-
-        "employees": "Employee Count",
-        "employee count": "Employee Count",
-
-        "suppliers": "Supplier Count",
-        "supplier count": "Supplier Count",
-
-        "categories": "Category Count",
-        "category count": "Category Count",
-
-        "shippers": "Shipper Count",
-        "shipper count": "Shipper Count",
-
-        "territories": "Territory Count",
-        "territory count": "Territory Count",
-
-        "regions": "Region Count",
-        "region count": "Region Count",
-
-        "in stock": "Products In Stock",
-        "inventory": "Products In Stock",
-
-        "on order": "Products On Order",
-
-        "average price": "Average Product Price",
-        "mean product price": "Average Product Price",
-    }
-
-    relevant_metrics = {}
-
-    for keyword, metric_name in metric_keywords.items():
-        if keyword in question_lower:
-            if metric_name in context["metrics"]:
-                relevant_metrics[metric_name] = context["metrics"][metric_name]
-
-    # ---------------------------------------------------------
-    # 3. Add source tables required by selected metrics
-    # ---------------------------------------------------------
-    for metric in relevant_metrics.values():
-        source = metric.get("source", "")
-
-        for table_name in context["tables"]:
-            if table_name.lower() in source.lower():
-                relevant_tables.add(table_name)
-
-    # Revenue/sales always needs order details.
-    # Orders is only needed when the query explicitly requires
-    # order-level information or an order-based metric.
-    if any(word in question_lower for word in [
-        "revenue",
-        "sales",
-        "gross sales",
-        "discount",
-        "quantity sold",
-        "units sold",
-        "average selling price",
-    ]):
-        relevant_tables.add("Order Details")
-
-    # ---------------------------------------------------------
-    # 4. Add only the shortest relationship paths needed
-    # ---------------------------------------------------------
-    path_tables = set(relevant_tables)
-
-    table_list = list(relevant_tables)
-
-    for i, start_table in enumerate(table_list):
-        for end_table in table_list[i + 1:]:
-            path = get_relationship_path(start_table, end_table)
-
-            if path:
-                path_tables.update(path)
-
-    relevant_tables = path_tables
-
-    # ---------------------------------------------------------
-    # 5. Safety fallback
-    # ---------------------------------------------------------
-    if not relevant_tables:
-        # Keep only a minimal schema instead of sending
-        # the entire semantic layer.
-        relevant_tables = {
-            "Customers",
-            "Products",
-            "Orders",
-            "Order Details"
-        }
-
-    # ---------------------------------------------------------
-    # 6. Build compact table information
-    # ---------------------------------------------------------
-    compact_tables = {}
-
-    for table_name in relevant_tables:
-
-        if table_name not in context["tables"]:
+        matches = difflib.get_close_matches(word, alias_to_table.keys(), n=1, cutoff=0.82)
+        if matches:
+            table = alias_to_table[matches[0]]
+            if table not in found:
+                found.append(table)
+
+    return found
+
+
+def _resolve_metric(question, primary_entity=None):
+    """Resolve a business metric from explicit names, configured synonyms and contextual cues."""
+    q = _normalize_semantic_text(question)
+    candidates = []
+
+    # 1. Exact metric synonyms
+    for metric_name, aliases in METRIC_SYNONYMS.items():
+        for alias in [metric_name] + aliases:
+            alias_n = _normalize_semantic_text(alias)
+            if alias_n and _phrase_in_text(q, alias_n):
+                candidates.append((len(alias_n), metric_name, alias_n))
+
+    # 2. Contextual Order Count when another entity (Customers, Employees) is primary
+    if primary_entity in {"Customers", "Employees"}:
+        order_patterns = [
+            r"\b(?:by|with|most|highest|zyada|jyada|vadhu|sabse\s+zyada|sabse\s+jyada|sauthi\s+vadhu)\s+orders?\b",
+            r"\borders?\s+(?:kiye|handled?|handle\s+kiye|placed|sanbhalya|na\s+che)\b",
+            r"\borders?\s+by\b",
+            r"\bkis\s+(?:customer|employee)\s+ne\s+sabse\s+zyada\s+orders?\b",
+            r"\bkaya\s+customer\s+na\s+vadhu\s+orders?\b",
+            r"\bunke\s+orders?\b",
+        ]
+        if any(re.search(p, q, flags=re.UNICODE) for p in order_patterns):
+            candidates.append((25, "Order Count", "contextual order count"))
+
+    # 3. Contextual Most Expensive / Unit Price
+    expensive_patterns = [
+        r"\b(?:most\s+expensive|highest\s+price|costliest)\b",
+        r"\b(?:mehnga|mehnge|sabse\s+mehnga|sabse\s+mehnge|mongha|sauthi\s+mongha)\b",
+        r"\b(?:महंगा|महंगे|सबसे\s+महंगा|સૌથી\s+મોંઘા|મોંઘા)\b",
+    ]
+    if any(re.search(p, q, flags=re.UNICODE) for p in expensive_patterns):
+        candidates.append((20, "Average Product Price", "contextual price"))
+
+    # 4. Contextual Most Sold -> Quantity Sold
+    if _phrase_in_text(q, "most sold") or _phrase_in_text(q, "sabse zyada bike"):
+        candidates.append((18, "Quantity Sold", "most sold"))
+
+    # 5. Fuzzy typo recovery for metrics
+    words = q.split()
+    known_aliases = {}
+    for metric_name, aliases in METRIC_SYNONYMS.items():
+        for alias in [metric_name] + aliases:
+            alias_n = _normalize_semantic_text(alias)
+            if len(alias_n.split()) == 1 and len(alias_n) >= 5:
+                known_aliases[alias_n] = metric_name
+
+    for word in words:
+        if len(word) < 5:
             continue
+        matches = difflib.get_close_matches(word, known_aliases.keys(), n=1, cutoff=0.84)
+        if matches:
+            alias = matches[0]
+            candidates.append((len(alias) - 1, known_aliases[alias], f"typo:{word}->{alias}"))
 
-        table_info = context["tables"][table_name]
+    if not candidates:
+        return None
 
-        columns = []
+    # Prefer longest matched phrase
+    candidates.sort(key=lambda x: -x[0])
+    return candidates[0][1]
 
-        for column in table_info["columns"]:
 
-            # Always keep primary keys.
-            keep = column["primary_key_position"] > 0
+def _resolve_ranking(question):
+    """Resolve ranking direction (ASC or DESC) across languages."""
+    q = _normalize_semantic_text(question)
 
-            # Keep foreign-key columns.
-            for fk in table_info["foreign_keys"]:
-                if fk["from_column"] == column["name"]:
-                    keep = True
+    asc_patterns = [
+        r"\b(?:worst|bottom|lowest|least|minimum|poorest|smallest)\b",
+        r"\b(?:bura|buri|sabse\s+bura|sabse\s+buri|kharab|sabse\s+kharab|sabse\s+kam|kam\s+se\s+kam)\b",
+        r"\b(?:sauthi\s+kharab|sauthi\s+ochhu|ochhu)\b",
+        r"\b(?:સૌથી\s+ખરાબ|ખરાબ|સૌથી\s+ઓછું|ઓછું)\b",
+        r"\b(?:सबसे\s+खराब|खराब|सबसे\s+कम|कम\s+से\s+कम|न्यूनतम)\b",
+    ]
+    if any(re.search(p, q, flags=re.UNICODE) for p in asc_patterns):
+        return "ASC"
 
-            # Keep columns explicitly mentioned in the question.
-            if column["name"].lower() in question_lower:
-                keep = True
+    desc_patterns = [
+        r"\b(?:best|top|highest|most|largest|maximum|leading|valuable|loyal|active|productive|popular)\b",
+        r"\b(?:achha|acha|achhi|acche|badiya|sabse\s+achha|sabse\s+acha|sabse\s+achhi|sabse\s+acche|sabse\s+badiya)\b",
+        r"\b(?:sabse\s+zyada|sabse\s+jyada|zyada|jyada|adhik|sabse\s+adhik|bada|sabse\s+bada)\b",
+        r"\b(?:mashhoor|lokpriya|lokpriy|sabse\s+popular|sabse\s+lokpriya|sabse\s+productive|kabil)\b",
+        r"\b(?:sauthi\s+saras|saras|sauthi\s+vadhu|vadhu|sauthi\s+mota|mota|sauthi\s+popular|sauthi\s+lokpriya)\b",
+        r"\b(?:સૌથી\s+સરસ|સરસ|સૌથી\s+વધુ|વધુ|સૌથી\s+લોકપ્રિય|લોકપ્રિય)\b",
+        r"\b(?:सबसे\s+अच्छा|सबसे\s+अच्छे|अच्छा|अच्छे|सबसे\s+ज्यादा|सबसे\s+अधिक|ज्यादा|अधिक|सबसे\s+लोकप्रिय|लोकप्रिय)\b",
+        r"\b(?:mehnge|mehnga|sabse\s+mehnga|sabse\s+mehnge|mongha|sauthi\s+mongha)\b",
+        r"\b(?:महंगे|महंगा|સૌથી\s+મોંઘા)\b",
+    ]
+    if any(re.search(p, q, flags=re.UNICODE) for p in desc_patterns):
+        return "DESC"
 
-            # Keep columns whose meaning contains a useful
-            # question keyword.
-            meaning = column.get("meaning", "").lower()
+    return None
 
-            for word in question_lower.split():
-                if len(word) >= 4 and word in meaning:
-                    keep = True
-                    break
 
-            # Keep metric columns.
-            for metric in relevant_metrics.values():
-                definition = metric.get("definition", "")
-                if column["name"] in definition:
-                    keep = True
+def _resolve_limit(question):
+    """Extract requested top/bottom N count or superlative limit 1."""
+    q = _normalize_semantic_text(question)
 
-            if keep:
-                columns.append({
-                    "name": column["name"],
-                    "type": column["data_type"],
-                    "meaning": column["meaning"]
-                })
+    m = re.search(r"\b(?:top|bottom|first|last)\s+(\d+)\b", q)
+    if m:
+        return int(m.group(1))
 
-        compact_tables[table_name] = {
-            "meaning": table_info["meaning"],
-            "columns": columns,
-            "foreign_keys": [
-                {
-                    "from": fk["from_column"],
-                    "to_table": fk["to_table"],
-                    "to": fk["to_column"]
-                }
-                for fk in table_info["foreign_keys"]
-                if fk["to_table"] in relevant_tables
-            ]
+    m = re.search(r"\b(\d+)\s+(?:top|bottom|best|worst|first|last|mehnge|mehnga|customers|products|orders)\b", q)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r"\b(?:સૌથી\s+મોંઘા|સૌથી\s+સરસ|સૌથી\s+વધુ|सबसे\s+महंगे|sabse\s+mehnge)\s+(\d+)\b", q)
+    if m:
+        return int(m.group(1))
+
+    if _resolve_ranking(q):
+        return 1
+
+    return None
+
+
+def _resolve_aggregation(question, metric):
+    q = _normalize_semantic_text(question)
+    if metric and metric in METRICS:
+        default = METRICS[metric].get("aggregation")
+    else:
+        default = None
+
+    if re.search(r"\b(?:average|avg|mean)\b", q):
+        return "AVG"
+    if re.search(r"\b(?:how many|number of|count|total number of|kitne|ketla|कुल कितने)\b", q):
+        if metric and metric.endswith("Count"):
+            return METRICS[metric].get("aggregation")
+        return "COUNT"
+    if re.search(r"\b(?:total|sum|कुल)\b", q):
+        return "SUM"
+    return default
+
+
+# ---------------------------------------------------------------------------
+# 8. STRUCTURED SEMANTIC INTENT (CORE ENGINE)
+# ---------------------------------------------------------------------------
+
+def resolve_semantic_intent(question, conversation_history=None):
+    """Deterministically resolve complete semantic intent before SQL generation."""
+    q = _normalize_semantic_text(question)
+
+    if _is_unsafe(q):
+        return {
+            "status": "unsafe",
+            "entity": None,
+            "entities": [],
+            "metric": None,
+            "ranking": None,
+            "limit": None,
+            "aggregation": None,
+            "needs_clarification": False,
+            "allowed_metrics": [],
+            "display_options": [],
+            "ambiguous_terms": [],
+            "conditions": {},
+            "group_by": [],
+            "filters": [],
         }
 
-    # ---------------------------------------------------------
-    # 7. Keep only relationships between selected tables
-    # ---------------------------------------------------------
-    relevant_relationships = []
+    if _is_unknown(q):
+        return {
+            "status": "unknown",
+            "entity": None,
+            "entities": [],
+            "metric": None,
+            "ranking": None,
+            "limit": None,
+            "aggregation": None,
+            "needs_clarification": False,
+            "allowed_metrics": [],
+            "display_options": [],
+            "ambiguous_terms": [],
+            "conditions": {},
+            "group_by": [],
+            "filters": [],
+        }
 
-    for relationship in context["relationships"]:
+    entities = _resolve_entities(q)
+    primary_entity = entities[0] if entities else None
 
-        if (
-            relationship["from_table"] in relevant_tables
-            and relationship["to_table"] in relevant_tables
-        ):
-            relevant_relationships.append({
-                "from": (
-                    relationship["from_table"]
-                    + "."
-                    + relationship["from_column"]
-                ),
-                "to": (
-                    relationship["to_table"]
-                    + "."
-                    + relationship["to_column"]
-                )
-            })
+    # Resolve entity from conversation history for follow-ups if missing in current question
+    if not primary_entity and conversation_history:
+        for hist in reversed(conversation_history):
+            h_entities = _resolve_entities(hist)
+            if h_entities:
+                primary_entity = h_entities[0]
+                if primary_entity not in entities:
+                    entities.append(primary_entity)
+                break
 
-    # ---------------------------------------------------------
-    # 8. Keep only business rules needed for selected metrics
-    # ---------------------------------------------------------
-    relevant_business_rules = []
+    metric = _resolve_metric(q, primary_entity)
+    ranking = _resolve_ranking(q)
+    limit = _resolve_limit(q)
+    aggregation = _resolve_aggregation(q, metric)
+    out_of_stock = bool(re.search(r"\b(?:out of stock|outofstock|outof stock|no stock|zero stock|stock is zero|stock khatam|stock nathi)\b", q))
 
-    for rule in context["business_rules"]:
+    # Clarification checking
+    needs_clarification = False
+    ambiguous_terms = []
+    allowed_metrics = []
 
-        rule_lower = rule.lower()
+    if primary_entity and primary_entity in METRIC_RULES:
+        rule = METRIC_RULES[primary_entity]
+        allowed_metrics = rule["metrics"]
 
-        keep_rule = False
+        # If user explicitly specified an allowed metric for this entity -> CLEAR
+        if metric and metric in allowed_metrics:
+            needs_clarification = False
+        elif ranking:
+            # Check ambiguous ranking words for this entity
+            ambiguous_words = rule["ambiguous_words"]
+            if any(_phrase_in_text(q, _normalize_semantic_text(w)) for w in ambiguous_words):
+                needs_clarification = True
+                ambiguous_terms.append(f"{primary_entity} ranking needs a metric")
 
-        # Metric-specific rules
-        for metric_name in relevant_metrics:
-            metric_word = metric_name.lower()
+    # Specific phrase clarification (e.g. "recent orders")
+    if re.search(r"\b(?:recent\s+orders|show\s+recent\s+orders)\b", q):
+        needs_clarification = True
+        primary_entity = "Orders"
+        allowed_metrics = METRIC_RULES["Orders"]["metrics"]
+        ambiguous_terms.append("recent orders needs clarification")
 
-            if metric_word in rule_lower:
-                keep_rule = True
+    # Grouping cues
+    group_by = []
+    group_patterns = {
+        "country": "Customers.Country",
+        "city": "Customers.City",
+        "category": "Categories.CategoryName",
+        "product": "Products.ProductName",
+        "customer": "Customers.CustomerID",
+        "employee": "Employees.EmployeeID",
+        "supplier": "Suppliers.SupplierID",
+        "region": "Regions.RegionDescription",
+        "territory": "Territories.TerritoryDescription",
+    }
+    for phrase, field_name in group_patterns.items():
+        if re.search(r"\b(?:per|by|each|wise|har|darek)\s+(?:the\s+)?" + re.escape(phrase) + r"s?\b", q):
+            group_by.append(field_name)
 
-        # Important SQL/database rules
-        if "order details" in rule_lower and (
-            "revenue" in question_lower
-            or "sales" in question_lower
-            or "quantity" in question_lower
-            or "price" in question_lower
-            or "discount" in question_lower
-        ):
-            keep_rule = True
+    display_options = clarification_display_options(allowed_metrics) if allowed_metrics else []
 
-        if "quote it with double quotes" in rule_lower:
-            keep_rule = True
+    status = "clarify" if needs_clarification else "clear"
 
-        if "spaces or special characters" in rule_lower:
-            keep_rule = True
-
-        if keep_rule and rule not in relevant_business_rules:
-            relevant_business_rules.append(rule)
-
-    # Always keep these two important rules when applicable.
-    if (
-        "revenue" in question_lower
-        or "sales" in question_lower
-    ):
-        for rule in context["business_rules"]:
-            if (
-                "historical transaction price" in rule.lower()
-                or "products.unitprice" in rule.lower()
-            ):
-                if rule not in relevant_business_rules:
-                    relevant_business_rules.append(rule)
-
-    # ---------------------------------------------------------
-    # 9. Return compact context
-    # ---------------------------------------------------------
     return {
-        "database": {
-            "name": "Northwind SQLite",
-            "dialect": "SQLite"
-        },
-        "tables": compact_tables,
-        "relationships": relevant_relationships,
-        "metrics": relevant_metrics,
-        "business_rules": relevant_business_rules
+        "status": status,
+        "entity": primary_entity,
+        "entities": entities,
+        "business_term": None,
+        "metric": metric,
+        "aggregation": aggregation,
+        "group_by": group_by,
+        "sort_direction": ranking,
+        "limit": limit,
+        "needs_clarification": needs_clarification,
+        "allowed_metrics": allowed_metrics,
+        "display_options": display_options,
+        "ambiguous_terms": ambiguous_terms,
+        "conditions": {"out_of_stock": out_of_stock},
+        "filters": [],
     }
 
-def get_semantic_context_text(question=None):
-    return json.dumps(get_semantic_context(question), indent=2, ensure_ascii=False)
+
+def check_clarification(question, conversation_history=None):
+    """Deterministic check returning 'UNSAFE', 'UNKNOWN', 'CLARIFY', or 'CLEAR'."""
+    intent = resolve_semantic_intent(question, conversation_history)
+    if intent["status"] == "unsafe":
+        return "UNSAFE"
+    if intent["status"] == "unknown":
+        return "UNKNOWN"
+    if intent["needs_clarification"]:
+        return "CLARIFY"
+    return "CLEAR"
 
 
-def parse_semantic(question):
-    """Interpret a user question into structured meaning. Never generate SQL."""
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY is not configured.")
+def get_clarification_options(question):
+    """Return entity-specific allowed canonical metrics for clarification."""
+    intent = resolve_semantic_intent(question)
+    return intent.get("allowed_metrics", ["Revenue", "Order Count", "Quantity Sold"])
 
-    context = get_semantic_context_text(question)
-    prompt = f"""
-You are the semantic interpretation layer for a Northwind SQLite database.
-Your job is ONLY to understand the user's question. NEVER generate SQL.
 
-Use ONLY the supplied semantic context. Do not invent tables, columns, metrics,
-relationships or business definitions.
+def clarification_display_options(allowed_metrics):
+    """Convert canonical internal metric names to user-friendly presentation display names."""
+    return [CANONICAL_TO_DISPLAY.get(metric, metric) for metric in allowed_metrics]
 
-SEMANTIC CONTEXT:
-{context}
 
-USER QUESTION:
-{question}
+def normalize_clarification_answer(answer, allowed_metrics):
+    """Robustly map user selected display option or typed input back to internal canonical metric."""
+    if not answer:
+        return None
+    ans = _normalize_semantic_text(answer)
 
-Return ONLY valid JSON with this exact structure:
-{{
-  "status": "clear | ambiguous | unknown",
-  "entity": null,
-  "business_term": null,
-  "metric": null,
-  "aggregation": null,
-  "filters": [],
-  "group_by": [],
-  "sort": null,
-  "limit": null,
-  "relationships": [],
-  "reason": null
-}}
+    # 1. Direct display name lookup
+    if ans in DISPLAY_TO_CANONICAL:
+        canonical = DISPLAY_TO_CANONICAL[ans]
+        if canonical in allowed_metrics:
+            return canonical
 
-Rules:
-1. Preserve every explicit filter from the user, including country, city, date,
-   price, quantity, category, employee, supplier and other conditions.
-2. Preserve grouping, sorting and LIMIT/top-N intent.
-3. If a defined metric is explicitly mentioned, use that metric.
-4. "best customers" without a metric is ambiguous; do not silently assume revenue.
-5. "customers with highest revenue" is clear: entity=Customer, metric=Revenue,
-   aggregation=SUM, sort=Revenue DESC, group_by=Customer.
-6. "most sold products" normally means Quantity Sold unless another metric is explicit.
-7. "most expensive products" normally means Products.UnitPrice.
-8. A word like highest/lowest/top/best is not itself a metric.
-9. Resolve synonyms using the supplied synonym dictionary.
-10. Use the actual relationship path needed by the requested entities/metrics.
-11. A query is unknown only when it does not map to the database knowledge.
-12. A query is ambiguous only when a required interpretation genuinely has multiple
-    reasonable meanings.
-13. Understand English, Hindi, Hinglish and Gujarati while preserving the intended meaning.
-14. Return JSON only.
-"""
+    # 2. Check canonical and display names
+    for metric in allowed_metrics:
+        if ans == metric.lower() or ans == f"by {metric.lower()}":
+            return metric
+        disp = CANONICAL_TO_DISPLAY.get(metric, metric).lower()
+        if ans == disp or ans == f"by {disp}":
+            return metric
 
-    client = Groq(api_key=api_key)
-    response = client.chat.completions.create(
-        model="qwen/qwen3.8-27b",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
+        # 3. Check metric synonyms
+        syns = METRIC_SYNONYMS.get(metric, [])
+        for synonym in syns:
+            s_low = synonym.lower()
+            if ans == s_low or ans == f"by {s_low}":
+                return metric
+
+    return None
+
+
+def needs_semantic_layer(question):
+    """Return True when semantic understanding helps this question."""
+    intent = resolve_semantic_intent(question)
+    return bool(
+        intent.get("entities")
+        or intent.get("metric")
+        or intent.get("group_by")
+        or intent.get("limit")
+        or intent.get("sort_direction")
+        or intent.get("conditions", {}).get("out_of_stock")
+        or intent.get("ambiguous_terms")
     )
-    content = response.choices[0].message.content.strip()
-    if content.startswith("```"):
-        content = content.strip("`").replace("json\n", "", 1).strip()
-    return json.loads(content)
+
+
+# ---------------------------------------------------------------------------
+# 9. SQL GENERATOR CONTEXT
+# ---------------------------------------------------------------------------
+
+ESSENTIAL_COLUMNS = {
+    "Customers": {"CustomerID", "CompanyName", "ContactName", "City", "Country", "Phone"},
+    "Products": {"ProductID", "ProductName", "UnitPrice", "UnitsInStock", "CategoryID", "SupplierID", "Discontinued"},
+    "Orders": {"OrderID", "CustomerID", "EmployeeID", "OrderDate", "RequiredDate", "ShippedDate", "Freight", "ShipCountry"},
+    "Order Details": {"OrderID", "ProductID", "UnitPrice", "Quantity", "Discount"},
+    "Employees": {"EmployeeID", "LastName", "FirstName", "Title", "ReportsTo"},
+    "Categories": {"CategoryID", "CategoryName", "Description"},
+    "Suppliers": {"SupplierID", "CompanyName", "Country"},
+    "Shippers": {"ShipperID", "CompanyName", "Phone"},
+    "Territories": {"TerritoryID", "TerritoryDescription", "RegionID"},
+    "Regions": {"RegionID", "RegionDescription"},
+}
+
+
+def get_compact_semantic_context(question=None):
+    """Return compact, deterministic semantic knowledge for the SQL generator."""
+    context = get_semantic_context(question)
+    if not question:
+        return context
+
+    question_lower = _normalize_semantic_text(question)
+    intent = resolve_semantic_intent(question)
+    relevant_tables = set(intent["entities"])
+    if intent.get("conditions", {}).get("out_of_stock"):
+        relevant_tables.add("Products")
+    relevant_metrics = {}
+
+    if intent["metric"] in context["metrics"]:
+        relevant_metrics[intent["metric"]] = context["metrics"][intent["metric"]]
+
+    # Count-style questions
+    count_patterns = ["how many", "number of", "count of", "count", "kitne", "ketla"]
+    if any(_phrase_in_text(question_lower, p) for p in count_patterns):
+        count_map = {
+            "Customers": "Customer Count", "Products": "Product Count",
+            "Orders": "Order Count", "Employees": "Employee Count",
+            "Suppliers": "Supplier Count", "Categories": "Category Count",
+            "Shippers": "Shipper Count", "Territories": "Territory Count",
+            "Regions": "Region Count",
+        }
+        for table, metric_name in count_map.items():
+            if table in relevant_tables and metric_name in context["metrics"]:
+                relevant_metrics[metric_name] = context["metrics"][metric_name]
+
+    # Add source tables required by metrics
+    for metric in relevant_metrics.values():
+        source = metric.get("source", "")
+        for table_name in context["tables"]:
+            if table_name.lower() in source.lower():
+                relevant_tables.add(table_name)
+
+    # Revenue/sales metrics require Order Details and Orders
+    if intent["metric"] in {"Revenue", "Gross Sales", "Discount Amount", "Quantity Sold", "Average Order Value", "Average Selling Price", "Average Discount"}:
+        relevant_tables.add("Order Details")
+        if "Customers" in relevant_tables or "Employees" in relevant_tables or "Orders" in relevant_tables or "customer" in question_lower or "employee" in question_lower or "order" in question_lower:
+            relevant_tables.add("Orders")
+
+    # Date/geography filters
+    if re.search(r"\b(?:order date|ordered|orders in|shipped|ship date|2016|2017|2018|2026)\b", question_lower):
+        relevant_tables.add("Orders")
+    if re.search(r"\b(?:customer country|customer city|from|in|country|city)\b", question_lower) and "Customers" in relevant_tables:
+        relevant_tables.add("Customers")
+
+    if not relevant_tables:
+        relevant_tables = {"Customers", "Products", "Orders", "Order Details"}
+
+    # Include FK paths between all relevant tables
+    path_tables = set(relevant_tables)
+    table_list = list(relevant_tables)
+    for i, start_table in enumerate(table_list):
+        for end_table in table_list[i + 1:]:
+            path = get_relationship_path(start_table, end_table)
+            if path:
+                path_tables.update(path)
+    relevant_tables = path_tables
+
+    compact_tables = {}
+    for table_name in sorted(relevant_tables):
+        if table_name not in context["tables"]:
+            continue
+        table_info = context["tables"][table_name]
+        essential = ESSENTIAL_COLUMNS.get(table_name, set())
+        columns = []
+        for column in table_info["columns"]:
+            keep = (
+                column["primary_key_position"] > 0
+                or column["name"] in essential
+                or any(fk["from_column"] == column["name"] for fk in table_info["foreign_keys"])
+                or _phrase_in_text(question_lower, _normalize_semantic_text(column["name"]))
+            )
+            for metric in relevant_metrics.values():
+                if column["name"] in metric.get("definition", ""):
+                    keep = True
+            if keep:
+                columns.append({
+                    "name": column["name"],
+                    "type": column["data_type"],
+                    "meaning": column["meaning"],
+                })
+
+        compact_tables[table_name] = {
+            "meaning": table_info["meaning"],
+            "columns": columns,
+            "foreign_keys": [
+                {"from": fk["from_column"], "to_table": fk["to_table"], "to": fk["to_column"]}
+                for fk in table_info["foreign_keys"]
+                if fk["to_table"] in relevant_tables
+            ],
+        }
+
+    relevant_relationships = []
+    for relationship in context["relationships"]:
+        if relationship["from_table"] in relevant_tables and relationship["to_table"] in relevant_tables:
+            relevant_relationships.append({
+                "from": relationship["from_table"] + "." + relationship["from_column"],
+                "to": relationship["to_table"] + "." + relationship["to_column"],
+            })
+
+    relevant_business_rules = []
+    metric_rule_names = set(relevant_metrics)
+    if intent["metric"]:
+        metric_rule_names.add(intent["metric"])
+    for rule in context["business_rules"]:
+        rule_lower = rule.lower()
+        keep = False
+        if any(name.lower() in rule_lower for name in metric_rule_names):
+            keep = True
+        if intent["metric"] in {"Revenue", "Gross Sales", "Discount Amount", "Quantity Sold", "Average Order Value", "Average Selling Price", "Average Discount"} and "order details" in rule_lower:
+            keep = True
+        if "spaces or special characters" in rule_lower or "do not invent" in rule_lower:
+            keep = True
+        if intent.get("conditions", {}).get("out_of_stock") and "out of stock" in rule_lower:
+            keep = True
+        if keep and rule not in relevant_business_rules:
+            relevant_business_rules.append(rule)
+
+    return {
+        "database": {"name": "Northwind SQLite", "dialect": "SQLite"},
+        "resolved_intent": intent,
+        "tables": compact_tables,
+        "relationships": relevant_relationships,
+        "metrics": relevant_metrics,
+        "business_rules": relevant_business_rules,
+    }
 
 
 def get_sql_generator_context(question):
-
     return {
         "semantic_layer": get_compact_semantic_context(question)
     }
@@ -1295,9 +1356,3 @@ def validate_semantic_coverage():
         "complete": not missing_tables and not missing_columns,
     }
 
-
-if __name__ == "__main__":
-    print(json.dumps(validate_semantic_coverage(), indent=2))
-    print("\nNorthwind tables:")
-    for table, info in get_database_metadata().items():
-        print(f"- {table}: {len(info['columns'])} columns")

@@ -3,8 +3,15 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from ai_provider import generate_sql
-from semantic_layer import get_sql_generator_context
-from database import (validate_sql,execute_sql,suggest_keyword)
+from semantic_layer import (
+    check_clarification,
+    get_clarification_options,
+    clarification_display_options,
+    normalize_clarification_answer,
+    METRIC_RULES,
+    METRICS,
+)
+from database import (validate_sql, execute_sql, suggest_keyword)
 
 load_dotenv()
 
@@ -159,6 +166,66 @@ def process_question(question, skip_clarification=False):
 
     conversation_history = get_conversation_history()
 
+    print("===== CLARIFICATION TEST =====")
+    print("Question:", question)
+
+    clarification_status = check_clarification(
+        question,
+        conversation_history
+    )
+
+    print("Clarification Status:", clarification_status)
+
+    # ==================================================
+    # CLARIFICATION
+    # ==================================================
+
+    if not skip_clarification:
+
+        if clarification_status == "CLARIFY":
+
+            allowed_metrics = get_clarification_options(
+                question
+            )
+
+            display_options = clarification_display_options(
+                allowed_metrics
+            )
+
+            clarification = {
+                "question": "What do you want to rank by?",
+                "options": display_options,
+                "allowed_metrics": allowed_metrics
+            }
+
+            st.session_state.messages.append({
+                "role": "assistant",
+                "type": "clarification",
+                "content": clarification,
+                "original_question": question
+            })
+
+            return
+
+        if clarification_status == "UNKNOWN":
+
+            message = (
+                "I couldn't find a matching table "
+                "or column in the database."
+            )
+
+            st.session_state.messages.append({
+                "role": "assistant",
+                "type": "text",
+                "content": message
+            })
+
+            return
+
+    # ==================================================
+    # SQL GENERATION
+    # ==================================================
+
     with st.chat_message("assistant"):
 
         thinking_placeholder = st.empty()
@@ -179,6 +246,10 @@ def process_question(question, skip_clarification=False):
 
             thinking_placeholder.empty()
 
+            # ------------------------------------------
+            # Unsafe query
+            # ------------------------------------------
+
             if sql.strip().upper() == "UNSAFE_QUERY":
 
                 message = (
@@ -195,6 +266,10 @@ def process_question(question, skip_clarification=False):
                 })
 
                 return
+
+            # ------------------------------------------
+            # Unknown query
+            # ------------------------------------------
 
             if sql.strip().upper() == "UNKNOWN_QUERY":
 
@@ -213,7 +288,15 @@ def process_question(question, skip_clarification=False):
 
                 return
 
+            # ------------------------------------------
+            # Validate SQL
+            # ------------------------------------------
+
             if not validate_sql(sql):
+
+                print("===== INVALID SQL =====")
+                print(sql)
+                print("======================")
 
                 message = "The generated SQL query is invalid."
 
@@ -226,6 +309,10 @@ def process_question(question, skip_clarification=False):
                 })
 
                 return
+
+            # ------------------------------------------
+            # Execute SQL
+            # ------------------------------------------
 
             df = execute_sql(sql)
 
@@ -240,7 +327,10 @@ def process_question(question, skip_clarification=False):
                     unsafe_allow_html=True
                 )
 
-                st.code(sql, language="sql")
+                st.code(
+                    sql,
+                    language="sql"
+                )
 
                 st.markdown(
                     '<div class="result-label">Result</div>',
@@ -252,6 +342,10 @@ def process_question(question, skip_clarification=False):
                     width="stretch",
                     hide_index=True
                 )
+
+            # ------------------------------------------
+            # Save assistant response
+            # ------------------------------------------
 
             st.session_state.messages.append({
                 "role": "assistant",
@@ -273,7 +367,6 @@ def process_question(question, skip_clarification=False):
                 "type": "text",
                 "content": message
             })
-
 # =========================================================
 # DISPLAY MESSAGES
 # =========================================================
@@ -302,7 +395,10 @@ for index, message in enumerate(st.session_state.messages):
                 unsafe_allow_html=True
             )
 
-            options = clarification.get("options", [])
+            options = clarification.get(
+                "options",
+                []
+            )
 
             if options:
 
@@ -324,20 +420,42 @@ for index, message in enumerate(st.session_state.messages):
                         ""
                     )
 
-                    combined_question = (
-                        f"{original_question}. {selected_option}"
+                    allowed_metrics = clarification.get(
+                        "allowed_metrics",
+                        []
                     )
 
-                    st.session_state.messages.pop(index)
+                    metric = normalize_clarification_answer(
+                        selected_option,
+                        allowed_metrics
+                    )
 
-                    st.session_state.messages.append({
-                        "role": "user",
-                        "type": "text",
-                        "content": combined_question
-                    })
+                    if metric is None:
 
-                    process_question(combined_question, skip_clarification=True)
-                    st.rerun()
+                        st.error(
+                            "Please choose one of the available options."
+                        )
+
+                    else:
+
+                        combined_question = (
+                            f"{original_question} by {metric}"
+                        )
+
+                        st.session_state.messages.pop(index)
+
+                        st.session_state.messages.append({
+                            "role": "user",
+                            "type": "text",
+                            "content": combined_question
+                        })
+
+                        process_question(
+                            combined_question,
+                            skip_clarification=True
+                        )
+
+                        st.rerun()
 
         else:
 
@@ -373,7 +491,6 @@ for index, message in enumerate(st.session_state.messages):
                         width="stretch",
                         hide_index=True
                     )
-
 
 # =========================================================
 # PENDING TYPO CONFIRMATION
@@ -469,6 +586,60 @@ question = st.chat_input(
 )
 
 if question:
+
+    # If a clarification is currently waiting for an answer,
+    # validate the typed answer before sending anything to the LLM.
+    pending_clarification = None
+
+    for message in reversed(st.session_state.messages):
+        if message.get("type") == "clarification":
+            pending_clarification = message
+            break
+
+    if pending_clarification:
+
+        clarification = pending_clarification.get("content", {})
+        allowed_metrics = clarification.get("allowed_metrics", [])
+        metric = normalize_clarification_answer(
+            question,
+            allowed_metrics
+        )
+
+        if metric is None:
+
+            st.session_state.messages.append({
+                "role": "assistant",
+                "type": "text",
+                "content": (
+                    "Invalid option. Please choose or type one of: "
+                    + ", ".join(clarification.get("options", []))
+                    + "."
+                )
+            })
+
+            st.rerun()
+
+        original_question = pending_clarification.get(
+            "original_question",
+            ""
+        )
+
+        combined_question = f"{original_question} by {metric}"
+
+        st.session_state.messages.remove(pending_clarification)
+
+        st.session_state.messages.append({
+            "role": "user",
+            "type": "text",
+            "content": combined_question
+        })
+
+        process_question(
+            combined_question,
+            skip_clarification=True
+        )
+
+        st.rerun()
 
     confirmation = find_confirmation(question)
 
