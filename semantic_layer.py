@@ -1202,15 +1202,21 @@ ESSENTIAL_COLUMNS = {
 }
 
 
-def get_compact_semantic_context(question=None):
+def get_compact_semantic_context(question=None, conversation_history=None):
     """Return compact, deterministic semantic knowledge for the SQL generator."""
     context = get_semantic_context(question)
     if not question:
         return context
 
-    question_lower = _normalize_semantic_text(question)
-    intent = resolve_semantic_intent(question)
+    history_text = " ".join(conversation_history) if conversation_history else ""
+    full_text = f"{question} {history_text}".strip()
+    question_lower = _normalize_semantic_text(full_text)
+    intent = resolve_semantic_intent(question, conversation_history)
     relevant_tables = set(intent["entities"])
+    if conversation_history:
+        for hist in conversation_history:
+            for ent in _resolve_entities(hist):
+                relevant_tables.add(ent)
     if intent.get("conditions", {}).get("out_of_stock"):
         relevant_tables.add("Products")
     relevant_metrics = {}
@@ -1334,9 +1340,9 @@ def get_compact_semantic_context(question=None):
     }
 
 
-def get_sql_generator_context(question):
+def get_sql_generator_context(question, conversation_history=None):
     return {
-        "semantic_layer": get_compact_semantic_context(question)
+        "semantic_layer": get_compact_semantic_context(question, conversation_history)
     }
 
 

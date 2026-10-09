@@ -1,3 +1,11 @@
 ﻿id,category,lang,question,expected,status,verdict,reason,provider,max_prompt_tokens,seconds,attempts,sql
-55,followup,hinglish,unke orders kitne hain,sql,RESULT,FAIL,result differs from the gold answer,Groq,976,0.6,Groq+(976),SELECT COUNT(DISTINCT Orders.OrderID) FROM Orders
-56,followup,hinglish,inme se sabse mehnga product kaun sa hai,sql,RESULT,PASS,,Groq,895,0.6,Groq+(895),SELECT * FROM Products ORDER BY UnitPrice DESC LIMIT 1
+1,basic,en,show all customers,sql,RESULT,PASS,,Groq,1164,17.1,OpenRouter+(1164) > Groq+(561),SELECT * FROM Customers
+2,basic,en,how many customers are there,sql,RESULT,PASS,,Groq,1166,5.2,OpenRouter+(1166) > Groq+(563),SELECT COUNT(*) FROM Customers
+3,basic,en,show customers from Germany,sql,RESULT,PASS,,Groq,1166,4.6,OpenRouter+(1166) > Groq+(563),SELECT * FROM Customers WHERE Country = 'Germany'
+4,basic,en,top 5 most expensive products,sql,RESULT,PASS,,Groq,1167,4.7,OpenRouter+(1167) > Groq+(844),SELECT * FROM Products ORDER BY UnitPrice DESC LIMIT 5
+5,basic,en,list products with price more than 50,sql,RESULT,PASS,,Groq,1169,12.3,OpenRouter+(1169) > Groq+(565),SELECT * FROM Products WHERE UnitPrice > 50
+6,basic,en,average price of products,sql,RESULT,PASS,,Groq,1166,3.1,OpenRouter+(1166) > Groq+(1009),"SELECT AVG(""Products"".""UnitPrice"") FROM ""Products"""
+7,basic,en,how many orders are there in total,sql,RESULT,PASS,,Groq,1168,3.7,OpenRouter+(1168) > Groq+(775),SELECT COUNT(*) FROM Orders
+8,basic,en,how many records are in order details,sql,INVALID,FAIL,generated SQL is not a valid single SELECT,Groq,1169,3.4,OpenRouter+(1169) > Groq+(566),SELECT COUNT(*) FROM `Order Details`
+9,basic,en,which products are out of stock,sql,RESULT,FAIL,result differs from the gold answer,Groq,1167,2.0,OpenRouter+(1167) > Groq+(564),SELECT * FROM Products WHERE Discontinued = 1 OR UnitsInStock = 0
+10,basic,en,how many products are discontinued,sql,RESULT,PASS,,Groq,1168,12.8,OpenRouter+(1168) > Groq+(565),SELECT COUNT(*) FROM Products WHERE Discontinued = 1

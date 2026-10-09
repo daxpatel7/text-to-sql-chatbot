@@ -141,4 +141,4 @@ def execute_sql(sql):
                 columns=result.keys()
             )
     except Exception as e:
-        raise Exception(f"Database error: {e}")
+        raise Exception(f"Database error: {e}")

@@ -63,7 +63,7 @@ def generate_sql(
         return "UNKNOWN_QUERY"
 
     # 2. Context & schema
-    semantic_context = get_sql_generator_context(question)
+    semantic_context = get_sql_generator_context(question, conversation_history)
 
     # 3. Typo correction for high-confidence matches
     words = question.split()
@@ -110,6 +110,7 @@ Rules:
 - Most sold products: SUM("Order Details".Quantity) DESC.
 - Out of stock products: Products.UnitsInStock = 0. Never use Discontinued for out of stock questions.
 - Understand English, Hindi, Hinglish, and Gujarati.
+- For follow-up questions referencing previous entities or filters (e.g. 'unke', 'unki', 'unka', 'their', 'them', 'those', 'inme'), you MUST preserve and apply previous filters (such as Country = 'Germany') and join with the previous entities.
 - Preserve filters, grouping, sorting direction (DESC or ASC), LIMIT N, and relevant previous conversation context.
 - When an alias is given to a table, use only that alias for all references to that table.
 - Verify every column reference matches the schema before returning the SQL.
