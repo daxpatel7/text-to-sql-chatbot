@@ -76,7 +76,7 @@ def load_css():
         """
 
     st.markdown(
-        f"<style>{css}\\n:root {{ {palette} }}</style>",
+        f"<style>{css}\n:root {{ {palette} }}</style>",
         unsafe_allow_html=True
     )
 
