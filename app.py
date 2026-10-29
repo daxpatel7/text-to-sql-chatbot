@@ -30,14 +30,55 @@ st.set_page_config(
 # LOAD CSS
 # =========================================================
 
+if "ui_theme" not in st.session_state:
+    st.session_state.ui_theme = "Light"
+
+
 def load_css():
     css_path = Path(__file__).parent / "style.css"
 
     with open(css_path, "r", encoding="utf-8") as f:
-        st.markdown(
-            f"<style>{f.read()}</style>",
-            unsafe_allow_html=True
-        )
+        css = f.read()
+
+    if st.session_state.ui_theme == "Dark":
+        palette = """
+        --bg: #1C211D;
+        --sidebar: #171B18;
+        --surface: #252B26;
+        --surface-hover: #2D352E;
+        --border: #3A433B;
+        --text: #F1F1E9;
+        --muted: #A8B0A4;
+        --accent: #D47A59;
+        --accent-strong: #E18C6B;
+        --accent-soft: #3B2C25;
+        --user-bubble: #2B332C;
+        --code-bg: #141815;
+        --table-head: #303830;
+        --shadow: rgba(0, 0, 0, .18);
+        """
+    else:
+        palette = """
+        --bg: #F4F4EF;
+        --sidebar: #EBEDE5;
+        --surface: #FBFBF7;
+        --surface-hover: #F0F1E9;
+        --border: #D9DCD1;
+        --text: #292D27;
+        --muted: #73786E;
+        --accent: #B65335;
+        --accent-strong: #98442D;
+        --accent-soft: #F2E1D9;
+        --user-bubble: #E8EBE1;
+        --code-bg: #222922;
+        --table-head: #E8EBE2;
+        --shadow: rgba(35, 42, 34, .05);
+        """
+
+    st.markdown(
+        f"<style>{css}\n:root {{ {palette} }}</style>",
+        unsafe_allow_html=True
+    )
 
 
 load_css()
@@ -75,9 +116,31 @@ with st.sidebar:
         st.rerun()
 
     st.markdown(
+        '<div class="sidebar-section">Appearance</div>',
+        unsafe_allow_html=True
+    )
+
+    st.radio(
+        "Theme",
+        ["Light", "Dark"],
+        horizontal=True,
+        key="ui_theme",
+        label_visibility="collapsed"
+    )
+
+    st.markdown(
         '<div class="sidebar-section">Your database</div>',
         unsafe_allow_html=True
-    )   
+    )
+
+    st.markdown(
+        '<div class="database-card">'
+        '<div class="database-dot"></div>'
+        '<div><strong>Northwind SQLite</strong>'
+        '<span>Read-only query workspace</span></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
 
 # =========================================================
@@ -323,6 +386,7 @@ def process_question(question, skip_clarification=False):
             else:
 
                 st.markdown(
+                    '<div class="tool-trace"><span>SCHEMA CONTEXT</span><i>→</i><span>SQL VALIDATION</span><i>→</i><span>SQLITE EXECUTION</span></div>'
                     '<div class="sql-label">Generated SQL</div>',
                     unsafe_allow_html=True
                 )
@@ -462,6 +526,7 @@ for index, message in enumerate(st.session_state.messages):
             if message.get("sql"):
 
                 st.markdown(
+                    '<div class="tool-trace"><span>SCHEMA CONTEXT</span><i>→</i><span>SQL VALIDATION</span><i>→</i><span>SQLITE EXECUTION</span></div>'
                     '<div class="sql-label">Generated SQL</div>',
                     unsafe_allow_html=True
                 )
@@ -566,10 +631,11 @@ if not st.session_state.messages:
     st.image("logo.png", width=64)
 
     st.markdown(
-        '<div class="welcome-title">How can I help with your database?</div>'
+        '<div class="welcome-eyebrow">NORTHWIND WORKSPACE</div>'
+        '<div class="welcome-title">Ask your data a question.</div>'
         '<div class="welcome-text">'
-        'Ask questions about your Northwind database using normal English, '
-        'Hinglish or Gujarati.'
+        'Explore your Northwind database in plain English, Hinglish or Gujarati. '
+        'I’ll turn your question into a validated SQL query and show the results.'
         '</div>',
         unsafe_allow_html=True
     )
@@ -582,7 +648,7 @@ if not st.session_state.messages:
 # =========================================================
 
 question = st.chat_input(
-    "Message Text-to-SQL AI..."
+    "Ask about customers, orders, products..."
 )
 
 if question:
